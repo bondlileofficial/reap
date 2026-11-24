@@ -137,6 +137,7 @@ function AuthScreen({ message }) {
 const Icon = ({ name, size = 20 }) => {
   const paths = {
     grid: <><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.6.9l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.6-.9l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-1.9l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.6-.9l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.6.9l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1-.1 1.9Z"/></>,
     wallet: <><path d="M4 7.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h11"/><path d="M15 12h5v4h-5a2 2 0 0 1 0-4Z"/></>,
     package: <><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 8 9 5 9-5v9l-9 5-9-5V8Z"/><path d="M12 13v9"/></>,
     activity: <><path d="M3 12h4l2-5 4 10 2-5h6"/></>,
@@ -183,6 +184,11 @@ function App() {
   const [packages, setPackages] = useState([])
   const [taskCompletions, setTaskCompletions] = useState([])
   const [profile, setProfile] = useState(null)
+  const [profileName, setProfileName] = useState('')
+  const [profilePhone, setProfilePhone] = useState('')
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [profileError, setProfileError] = useState('')
+  const [profileNotice, setProfileNotice] = useState('')
   const [dataLoading, setDataLoading] = useState(isSupabaseConfigured)
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
@@ -260,6 +266,43 @@ function App() {
       if (error) setAppError(error.message)
     } catch (requestError) {
       setAppError(requestError instanceof Error ? requestError.message : 'Sign out failed.')
+    }
+  }
+
+  async function saveProfile(event) {
+    event.preventDefault()
+    if (!session?.user.id) {
+      setProfileError('Sign in to update your account details.')
+      return
+    }
+
+    const displayName = profileName.trim()
+    const phoneNumber = profilePhone.trim()
+    if (!displayName) {
+      setProfileError('Enter your name before saving.')
+      return
+    }
+
+    setProfileBusy(true)
+    setProfileError('')
+    setProfileNotice('')
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({ display_name: displayName, phone_number: phoneNumber || null })
+        .eq('id', session.user.id)
+        .select('id, display_name, phone_number, referral_code')
+        .single()
+
+      if (error) throw error
+      setProfile(data)
+      setProfileName(data.display_name || '')
+      setProfilePhone(data.phone_number || '')
+      setProfileNotice('Your account details have been saved.')
+    } catch (requestError) {
+      setProfileError(requestError instanceof Error ? requestError.message : 'Could not save your account details.')
+    } finally {
+      setProfileBusy(false)
     }
   }
 
@@ -504,7 +547,7 @@ function App() {
 
       try {
         const [profileResult, ledgerResult, packagesResult, completionsResult, withdrawalRequestsResult] = await Promise.all([
-          supabase.from('profiles').select('id, display_name, referral_code').eq('id', session.user.id).single(),
+          supabase.from('profiles').select('id, display_name, phone_number, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
           supabase.from('task_completions').select('id, task_id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', today),
@@ -513,7 +556,11 @@ function App() {
 
         if (!activeRequest) return
 
-        if (!profileResult.error) setProfile(profileResult.data)
+          if (!profileResult.error) {
+            setProfile(profileResult.data)
+            setProfileName(profileResult.data.display_name || '')
+            setProfilePhone(profileResult.data.phone_number || '')
+          }
         if (!ledgerResult.error) setLedgerEntries(ledgerResult.data ?? [])
         if (!packagesResult.error) setPackages(packagesResult.data ?? [])
         if (!completionsResult.error) setTaskCompletions(completionsResult.data ?? [])
@@ -798,6 +845,7 @@ function App() {
             ['Packages', 'package'],
             ['Activity', 'activity'],
             ['Referrals', 'user'],
+            ['Settings', 'settings'],
           ].map(([label, icon]) => (
             <button key={label} className={active === label ? 'nav-item active' : 'nav-item'} onClick={() => setActive(label)}>
               <Icon name={icon} />
@@ -829,7 +877,7 @@ function App() {
           </div>
           <div className="top-actions">
             <button className="icon-button" aria-label="Notifications"><Icon name="bell" /><span className="notification-dot" /></button>
-            <button className="avatar" aria-label="Open profile">
+            <button className="avatar" aria-label="Open settings" onClick={() => setActive('Settings')}>
               {(profile?.display_name || session?.user.email || 'U').trim().slice(0, 2).toUpperCase()}
             </button>
           </div>
@@ -970,6 +1018,65 @@ function App() {
                 </div>
                 <p className="referral-disclaimer">Commissions are credited only after ad revenue is verified by the server. Referral rewards are not paid on deposits or package purchases.</p>
               </div>
+            ) : active === 'Settings' ? (
+              <section className="settings-card">
+                <div className="settings-heading">
+                  <p className="eyebrow">Account</p>
+                  <h2>Personal details</h2>
+                  <p>Update the name and phone number associated with your account.</p>
+                </div>
+                {isSupabaseConfigured && session?.user ? (
+                  <>
+                    <form className="settings-form" onSubmit={saveProfile}>
+                      <label>
+                        Full name
+                        <input
+                          name="display_name"
+                          type="text"
+                          autoComplete="name"
+                          maxLength="80"
+                          value={profileName}
+                          onChange={(event) => setProfileName(event.target.value)}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Phone number
+                        <input
+                          name="phone_number"
+                          type="tel"
+                          autoComplete="tel"
+                          maxLength="32"
+                          value={profilePhone}
+                          onChange={(event) => setProfilePhone(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Email
+                        <input type="email" value={session.user.email || ''} readOnly />
+                      </label>
+                      {profileError && <p className="auth-error" role="alert">{profileError}</p>}
+                      {profileNotice && <p className="auth-notice" role="status">{profileNotice}</p>}
+                      <button className="primary-button" type="submit" disabled={profileBusy}>
+                        {profileBusy ? 'Saving…' : 'Save changes'}
+                      </button>
+                    </form>
+                    <div className="settings-signout">
+                      <div>
+                        <h3>Sign out</h3>
+                        <p>End your current Reap session on this device.</p>
+                      </div>
+                      <button className="settings-signout-button" type="button" onClick={handleSignOut}>Sign out</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-state settings-empty">
+                    <div className="empty-icon"><Icon name="user" size={28} /></div>
+                    <h2>Sign in to manage your account</h2>
+                    <p>Your profile settings are available after you connect and sign in.</p>
+                  </div>
+                )}
+              </section>
             ) : (
               <div className="empty-state">
                 <div className="empty-icon"><Icon name={active === 'Wallet' ? 'wallet' : active === 'Activity' ? 'activity' : 'package'} size={28} /></div>

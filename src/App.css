@@ -843,6 +843,110 @@
   line-height: 1.6;
 }
 
+.settings-card {
+  max-width: 720px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.settings-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 22px;
+  letter-spacing: -.04em;
+}
+
+.settings-heading > p:last-child {
+  margin: 7px 0 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-form {
+  max-width: 460px;
+}
+
+.settings-form label {
+  display: block;
+  margin-bottom: 15px;
+  color: #676d64;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.settings-form input {
+  width: 100%;
+  height: 44px;
+  margin-top: 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #fff;
+  color: var(--ink);
+  outline: none;
+}
+
+.settings-form input:focus {
+  border-color: #78956a;
+  box-shadow: 0 0 0 3px rgba(185,221,112,.18);
+}
+
+.settings-form input:read-only {
+  background: #f1f3ed;
+  color: var(--muted);
+}
+
+.settings-form .primary-button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.settings-signout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 460px;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-signout h3,
+.settings-signout p {
+  margin: 0;
+}
+
+.settings-signout h3 {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.settings-signout p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-signout-button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #e8c8c3;
+  border-radius: 7px;
+  background: #fff;
+  color: #a53d33;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-empty {
+  min-height: 280px;
+  border: 0;
+  background: transparent;
+}
+
 .auth-page {
   min-height: 100vh;
   display: grid;
@@ -1018,7 +1122,7 @@
   .main-nav {
     height: 100%;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
   .nav-item {
     height: 50px;
@@ -1068,5 +1172,8 @@
   }
   .auth-card {
     padding: 26px 22px;
+  }
+  .settings-card {
+    padding: 22px 18px;
   }
 }
