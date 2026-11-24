@@ -68,6 +68,18 @@ function AuthScreen({ message }) {
         setError('A referral code is required to create an account.')
         return
       }
+      if (mode === 'sign-up') {
+        const { data: referralCodeIsValid, error: referralCheckError } = await supabase.rpc(
+          'is_valid_referral_code',
+          { p_referral_code: submittedReferralCode },
+        )
+        if (referralCheckError) throw referralCheckError
+        if (!referralCodeIsValid) {
+          setError('That referral code is not valid. Ask your inviter for their code and try again.')
+          return
+        }
+      }
+
       const result = mode === 'sign-in'
         ? await supabase.auth.signInWithPassword({ email, password })
         : await supabase.auth.signUp({
@@ -82,7 +94,11 @@ function AuthScreen({ message }) {
           })
 
       if (result.error) {
-        setError(result.error.message)
+        const isDatabaseSignupError = mode === 'sign-up'
+          && result.error.message.toLowerCase().includes('database error saving new user')
+        setError(isDatabaseSignupError
+          ? 'We could not create your account. Check that the referral code is valid and try again. If the problem continues, contact support.'
+          : result.error.message)
       } else if (mode === 'sign-up' && !result.data.session) {
         setNotice('Check your email to confirm your account, then sign in.')
       }
@@ -99,7 +115,6 @@ function AuthScreen({ message }) {
         <div className="auth-brand"><span className="brand-mark"><span /></span><span>reap</span></div>
         <p className="eyebrow">{mode === 'sign-in' ? 'Welcome back' : 'Get started'}</p>
         <h1>{mode === 'sign-in' ? 'Sign in to Reap' : 'Create your account'}</h1>
-        <p className="auth-description">Your account is secured and managed by Supabase Auth.</p>
         {message && <p className="auth-error" role="alert">{message}</p>}
         {error && <p className="auth-error" role="alert">{error}</p>}
         {notice && <p className="auth-notice" role="status">{notice}</p>}
