@@ -123,6 +123,13 @@ function App() {
   const [depositNetwork, setDepositNetwork] = useState('TRC20')
   const [addressCopied, setAddressCopied] = useState(false)
   const [depositError, setDepositError] = useState('')
+  const [withdrawalAmount, setWithdrawalAmount] = useState('')
+  const [withdrawalNetwork, setWithdrawalNetwork] = useState('TRC20')
+  const [withdrawalAddress, setWithdrawalAddress] = useState('')
+  const [withdrawalRequests, setWithdrawalRequests] = useState([])
+  const [withdrawalBusy, setWithdrawalBusy] = useState(false)
+  const [withdrawalError, setWithdrawalError] = useState('')
+  const [withdrawalNotice, setWithdrawalNotice] = useState('')
   const [dbPlans, setDbPlans] = useState(plans)
   const [selectedPlan, setSelectedPlan] = useState(plans[2])
   const [tasks, setTasks] = useState([])
@@ -147,6 +154,13 @@ function App() {
       setDepositNetwork('TRC20')
       setAddressCopied(false)
       setDepositError('')
+    }
+    if (type === 'withdraw') {
+      setWithdrawalAmount('')
+      setWithdrawalNetwork('TRC20')
+      setWithdrawalAddress('')
+      setWithdrawalError('')
+      setWithdrawalNotice('')
     }
     setModal(type)
   }
@@ -265,11 +279,12 @@ function App() {
       }
 
       try {
-        const [profileResult, ledgerResult, packagesResult, completionsResult] = await Promise.all([
+        const [profileResult, ledgerResult, packagesResult, completionsResult, withdrawalRequestsResult] = await Promise.all([
           supabase.from('profiles').select('id, display_name, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
           supabase.from('task_completions').select('id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', new Date().toISOString().slice(0, 10)),
+          supabase.from('withdrawal_requests').select('id, amount_usd, status').eq('user_id', session.user.id).in('status', ['pending', 'processing']),
         ])
 
         if (!activeRequest) return
@@ -278,12 +293,14 @@ function App() {
         if (!ledgerResult.error) setLedgerEntries(ledgerResult.data ?? [])
         if (!packagesResult.error) setPackages(packagesResult.data ?? [])
         if (!completionsResult.error) setTaskCompletions(completionsResult.data ?? [])
+        if (!withdrawalRequestsResult.error) setWithdrawalRequests(withdrawalRequestsResult.data ?? [])
 
         const personalError = [
           profileResult.error,
           ledgerResult.error,
           packagesResult.error,
           completionsResult.error,
+          withdrawalRequestsResult.error,
         ].find(Boolean)
         if (personalError) setAppError(personalError.message)
       } catch (requestError) {
@@ -321,6 +338,47 @@ function App() {
     }
   }
 
+  async function submitWithdrawal(event) {
+    event.preventDefault()
+    setWithdrawalError('')
+    setWithdrawalNotice('')
+
+    const amount = Number(withdrawalAmount)
+    if (!Number.isFinite(amount) || amount < 5 || amount > availableBalance) {
+      setWithdrawalError(`Enter an amount from $5.00 up to your available balance of $${availableBalance.toFixed(2)}.`)
+      return
+    }
+    if (!withdrawalAddress.trim()) {
+      setWithdrawalError('Enter the wallet address to receive your withdrawal.')
+      return
+    }
+    if (!supabase) {
+      setWithdrawalError('Connect Supabase before submitting a withdrawal request.')
+      return
+    }
+
+    setWithdrawalBusy(true)
+    try {
+      const { data, error } = await supabase.rpc('request_withdrawal', {
+        p_amount_usd: amount,
+        p_network: withdrawalNetwork,
+        p_destination_address: withdrawalAddress.trim(),
+      })
+      if (error) throw error
+
+      setWithdrawalRequests((current) => [
+        ...current,
+        { id: data, amount_usd: amount, status: 'pending' },
+      ])
+      setWithdrawalAmount('')
+      setWithdrawalNotice('Withdrawal request submitted for review. Payout is not automatic.')
+    } catch (requestError) {
+      setWithdrawalError(requestError instanceof Error ? requestError.message : 'Could not submit the withdrawal request.')
+    } finally {
+      setWithdrawalBusy(false)
+    }
+  }
+
   const totalBalance = ledgerEntries.reduce((total, entry) => {
     const amount = Number(entry.amount_usd)
     if (entry.entry_type === 'withdrawal') return total - amount
@@ -329,6 +387,17 @@ function App() {
     }
     return total
   }, 0)
+  const reservedWithdrawals = withdrawalRequests
+    .filter((request) => ['pending', 'processing'].includes(request.status))
+    .reduce((total, request) => total + Number(request.amount_usd), 0)
+  const availableBalance = Math.floor(Math.max(0, totalBalance - reservedWithdrawals) * 100) / 100
+  const withdrawalFee = Math.round(Number(withdrawalAmount || 0) * 5) / 100
+  const withdrawalPayout = Math.max(0, Number(withdrawalAmount || 0) - withdrawalFee)
+  const withdrawalSuggestions = [5, 10, 20, 50, 100]
+    .filter((amount) => amount <= availableBalance)
+  if (availableBalance >= 5 && !withdrawalSuggestions.includes(availableBalance)) {
+    withdrawalSuggestions.push(availableBalance)
+  }
   const todayReward = ledgerEntries
     .filter((entry) => entry.entry_type === 'task_reward' && entry.created_at?.slice(0, 10) === new Date().toISOString().slice(0, 10))
     .reduce((total, entry) => total + Number(entry.amount_usd), 0)
@@ -539,11 +608,11 @@ function App() {
                 <div className="modal-summary"><span>{selectedPlan.tasks} daily tasks</span><span>${selectedPlan.daily} daily earnings</span><span>365 day term</span></div>
                 <button className="primary-button wide" onClick={() => openModal('deposit')}>Continue to deposit</button>
               </>
-            ) : (
+            ) : modal === 'deposit' ? (
               <>
-                <p className="eyebrow">{modal === 'deposit' ? 'Add funds' : 'Cash out'}</p>
-                <h2 id="modal-title">{modal === 'deposit' ? 'Deposit crypto' : 'Withdraw crypto'}</h2>
-                <label>Amount (USD)<input type="number" defaultValue={modal === 'deposit' ? selectedPlan.amount : 50} min="5" /></label>
+                <p className="eyebrow">Add funds</p>
+                <h2 id="modal-title">Deposit crypto</h2>
+                <label>Amount (USD)<input type="number" defaultValue={selectedPlan.amount} min="5" /></label>
                 <label>Cryptocurrency
                   <select defaultValue="USDT"><option value="USDT">USDT</option></select>
                 </label>
@@ -553,7 +622,7 @@ function App() {
                     <option value="BEP20">BNB (BEP20)</option>
                   </select>
                 </label>
-                {modal === 'deposit' && depositNetwork === 'TRC20' && (
+                {depositNetwork === 'TRC20' && (
                   <div className="deposit-address">
                     <span>USDT deposit address (TRC20)</span>
                     <code>{tronDepositAddress}</code>
@@ -563,13 +632,75 @@ function App() {
                     <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send BEP20 or other tokens to this address. Transfers are not automatically detected or credited; verify the address and network before sending.</p>
                   </div>
                 )}
-                {modal === 'deposit' && depositNetwork === 'BEP20' && (
+                {depositNetwork === 'BEP20' && (
                   <p className="preview-modal-note">Deposits on BNB (BEP20) are not supported. Select TRON (TRC20) to view the deposit address.</p>
                 )}
-                {modal === 'withdraw' && <p className="preview-modal-note">Withdrawals are not connected to a payment provider.</p>}
                 {depositError && <p className="auth-error" role="alert">{depositError}</p>}
-                {modal === 'withdraw' && (
-                  <button className="primary-button wide" onClick={() => setModal(null)} disabled={!isSupabaseConfigured}>Continue</button>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">Cash out</p>
+                <h2 id="modal-title">Withdraw USDT</h2>
+                {dataLoading ? (
+                  <p className="preview-modal-note">Loading your available balance…</p>
+                ) : availableBalance < 5 ? (
+                  <p className="preview-modal-note">Withdrawals start at $5.00. Your available balance is ${availableBalance.toFixed(2)}.</p>
+                ) : (
+                  <form onSubmit={submitWithdrawal}>
+                    <p className="withdrawal-available">Available to withdraw: <strong>${availableBalance.toFixed(2)}</strong></p>
+                    <label>Amount to withdraw (USD)
+                      <input
+                        type="number"
+                        min="5"
+                        max={availableBalance.toFixed(2)}
+                        step="0.01"
+                        value={withdrawalAmount}
+                        onChange={(event) => setWithdrawalAmount(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <div className="withdrawal-options" aria-label="Suggested withdrawal amounts">
+                      {withdrawalSuggestions.map((amount) => (
+                        <button
+                          key={amount}
+                          className={Number(withdrawalAmount) === amount ? 'secondary-button selected' : 'secondary-button'}
+                          type="button"
+                          aria-pressed={Number(withdrawalAmount) === amount}
+                          onClick={() => setWithdrawalAmount(amount.toFixed(2))}
+                        >
+                          {amount === availableBalance ? `Max $${amount.toFixed(2)}` : `$${amount}`}
+                        </button>
+                      ))}
+                    </div>
+                    <label>Network
+                      <select value={withdrawalNetwork} onChange={(event) => setWithdrawalNetwork(event.target.value)}>
+                        <option value="TRC20">TRON (TRC20)</option>
+                        <option value="BEP20">BNB (BEP20)</option>
+                      </select>
+                    </label>
+                    <label>USDT receiving wallet address
+                      <input
+                        type="text"
+                        autoComplete="off"
+                        minLength="20"
+                        maxLength="128"
+                        value={withdrawalAddress}
+                        onChange={(event) => setWithdrawalAddress(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <div className="withdrawal-summary">
+                      <span>Withdrawal amount <strong>${Number(withdrawalAmount || 0).toFixed(2)}</strong></span>
+                      <span>5% fee <strong>−${withdrawalFee.toFixed(2)}</strong></span>
+                      <span>Estimated payout <strong>${withdrawalPayout.toFixed(2)} USDT</strong></span>
+                    </div>
+                    <p className="preview-modal-note">Minimum $5.00. The 5% fee is deducted from the requested amount. Requests are subject to review; payout is not automatic. Check the network and address carefully.</p>
+                    {withdrawalError && <p className="auth-error" role="alert">{withdrawalError}</p>}
+                    {withdrawalNotice && <p className="auth-notice" role="status">{withdrawalNotice}</p>}
+                    <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || withdrawalBusy || Number(withdrawalAmount) < 5 || Number(withdrawalAmount) > availableBalance}>
+                      {withdrawalBusy ? 'Submitting…' : 'Submit withdrawal request'}
+                    </button>
+                  </form>
                 )}
               </>
             )}
