@@ -794,6 +794,16 @@
   letter-spacing: .12em;
 }
 
+.referral-full-link {
+  display: inline-block;
+  margin-top: 10px;
+  color: #d7e3da;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .referral-share .primary-button:disabled {
   cursor: not-allowed;
   opacity: .6;
@@ -1187,6 +1197,32 @@
 .review-type.withdrawal {
   background: #fff1e8;
   color: #94522a;
+}
+
+.wallet-table {
+  min-width: 580px;
+}
+
+.wallet-status {
+  display: inline-flex;
+  padding: 5px 8px;
+  border-radius: 20px;
+  background: #edf1e7;
+  color: var(--forest);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.wallet-status.rejected {
+  background: #fff1e8;
+  color: #94522a;
+}
+
+.wallet-status.pending,
+.wallet-status.expired {
+  background: #f5f0df;
+  color: #80652c;
 }
 
 .review-proof {

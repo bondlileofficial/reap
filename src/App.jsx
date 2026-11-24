@@ -46,11 +46,11 @@ const plans = [
 ]
 
 function AuthScreen({ message }) {
-  const [mode, setMode] = useState('sign-in')
+  const [referralCode, setReferralCode] = useState(getReferralCodeFromUrl)
+  const [mode, setMode] = useState(() => referralCode ? 'sign-up' : 'sign-in')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [referralCode, setReferralCode] = useState(getReferralCodeFromUrl)
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -192,12 +192,19 @@ function App() {
   const [withdrawalAddress, setWithdrawalAddress] = useState('')
   const [withdrawalRequests, setWithdrawalRequests] = useState([])
   const [withdrawalBusy, setWithdrawalBusy] = useState(false)
+  const [withdrawalBalanceLoading, setWithdrawalBalanceLoading] = useState(false)
   const [withdrawalError, setWithdrawalError] = useState('')
   const [withdrawalNotice, setWithdrawalNotice] = useState('')
+  const [packagePurchaseBusy, setPackagePurchaseBusy] = useState(false)
+  const [packageBalanceLoading, setPackageBalanceLoading] = useState(false)
+  const [packagePurchaseError, setPackagePurchaseError] = useState('')
+  const [packagePurchaseNotice, setPackagePurchaseNotice] = useState('')
   const [dbPlans, setDbPlans] = useState(plans)
   const [selectedPlan, setSelectedPlan] = useState(plans[2])
   const [tasks, setTasks] = useState([])
   const [ledgerEntries, setLedgerEntries] = useState([])
+  const [depositRequests, setDepositRequests] = useState([])
+  const [databaseAvailableBalance, setDatabaseAvailableBalance] = useState(null)
   const [packages, setPackages] = useState([])
   const [taskCompletions, setTaskCompletions] = useState([])
   const [profile, setProfile] = useState(null)
@@ -286,6 +293,22 @@ function App() {
       setWithdrawalAddress('')
       setWithdrawalError('')
       setWithdrawalNotice('')
+      setWithdrawalBalanceLoading(true)
+      refreshWalletRecords()
+        .catch((requestError) => {
+          setWithdrawalError(requestError instanceof Error ? requestError.message : 'Could not verify your available balance.')
+        })
+        .finally(() => setWithdrawalBalanceLoading(false))
+    }
+    if (type === 'choose') {
+      setPackagePurchaseError('')
+      setPackagePurchaseNotice('')
+      setPackageBalanceLoading(true)
+      refreshWalletRecords()
+        .catch((requestError) => {
+          setPackagePurchaseError(requestError instanceof Error ? requestError.message : 'Could not verify your wallet balance.')
+        })
+        .finally(() => setPackageBalanceLoading(false))
     }
     setModal(type)
   }
@@ -528,6 +551,7 @@ function App() {
 
     async function loadDatabaseData() {
       setDataLoading(true)
+      setDatabaseAvailableBalance(null)
 
       const publicQueries = [
         supabase
@@ -576,12 +600,14 @@ function App() {
       }
 
       try {
-        const [profileResult, ledgerResult, packagesResult, completionsResult, withdrawalRequestsResult] = await Promise.all([
+        const [profileResult, ledgerResult, packagesResult, completionsResult, withdrawalRequestsResult, walletBalanceResult, depositRequestsResult] = await Promise.all([
           supabase.from('profiles').select('id, display_name, phone_number, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
           supabase.from('task_completions').select('id, task_id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', today),
           supabase.from('withdrawal_requests').select('id, amount_usd, status').eq('user_id', session.user.id).in('status', ['pending', 'processing']),
+          supabase.rpc('get_my_available_wallet_balance'),
+          supabase.from('deposit_requests').select('id, amount_usd, status, created_at').eq('user_id', session.user.id).order('created_at', { ascending: false }),
         ])
 
         if (!activeRequest) return
@@ -592,9 +618,15 @@ function App() {
             setProfilePhone(profileResult.data.phone_number || '')
           }
         if (!ledgerResult.error) setLedgerEntries(ledgerResult.data ?? [])
+        if (!walletBalanceResult.error && walletBalanceResult.data !== null) {
+          setDatabaseAvailableBalance(Number(walletBalanceResult.data))
+        } else {
+          setDatabaseAvailableBalance(null)
+        }
         if (!packagesResult.error) setPackages(packagesResult.data ?? [])
         if (!completionsResult.error) setTaskCompletions(completionsResult.data ?? [])
         if (!withdrawalRequestsResult.error) setWithdrawalRequests(withdrawalRequestsResult.data ?? [])
+        if (!depositRequestsResult.error) setDepositRequests(depositRequestsResult.data ?? [])
 
         const personalError = [
           profileResult.error,
@@ -602,6 +634,8 @@ function App() {
           packagesResult.error,
           completionsResult.error,
           withdrawalRequestsResult.error,
+          walletBalanceResult.error,
+          depositRequestsResult.error,
         ].find(Boolean)
         if (personalError) setAppError(personalError.message)
       } catch (requestError) {
@@ -645,7 +679,7 @@ function App() {
   const refreshWalletRecords = useCallback(async (isActive = () => true) => {
     if (!userId) return
 
-    const [ledgerResult, withdrawalResult] = await Promise.all([
+    const [ledgerResult, withdrawalResult, walletBalanceResult, packagesResult, depositRequestsResult] = await Promise.all([
       supabase
         .from('ledger_entries')
         .select('entry_type, amount_usd, status, created_at')
@@ -657,13 +691,28 @@ function App() {
         .select('id, amount_usd, status')
         .eq('user_id', userId)
         .in('status', ['pending', 'processing']),
+      supabase.rpc('get_my_available_wallet_balance'),
+      supabase
+        .from('user_packages')
+        .select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('deposit_requests')
+        .select('id, amount_usd, status, created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
     ])
     if (!isActive()) return
-    const queryError = ledgerResult.error || withdrawalResult.error
+    const queryError = ledgerResult.error || withdrawalResult.error || walletBalanceResult.error || packagesResult.error || depositRequestsResult.error
     if (queryError) throw queryError
 
     setLedgerEntries(ledgerResult.data ?? [])
     setWithdrawalRequests(withdrawalResult.data ?? [])
+    setDatabaseAvailableBalance(Number(walletBalanceResult.data))
+    setPackages(packagesResult.data ?? [])
+    setDepositRequests(depositRequestsResult.data ?? [])
+    return Number(walletBalanceResult.data)
   }, [userId])
 
   useEffect(() => {
@@ -884,8 +933,8 @@ function App() {
     setWithdrawalNotice('')
 
     const amount = Number(withdrawalAmount)
-    if (!Number.isFinite(amount) || amount < 5 || amount > availableBalance) {
-      setWithdrawalError(`Enter an amount from $5.00 up to your available balance of $${availableBalance.toFixed(2)}.`)
+    if (!Number.isFinite(amount) || amount < 5) {
+      setWithdrawalError('Enter a withdrawal amount of at least $5.00.')
       return
     }
     if (!withdrawalAddress.trim()) {
@@ -899,6 +948,13 @@ function App() {
 
     setWithdrawalBusy(true)
     try {
+      setWithdrawalBalanceLoading(true)
+      const currentAvailableBalance = await refreshWalletRecords()
+      if (amount > currentAvailableBalance) {
+        setWithdrawalError(`Enter an amount from $5.00 up to your available balance of $${currentAvailableBalance.toFixed(2)}.`)
+        return
+      }
+
       const { data, error } = await supabase.rpc('request_withdrawal', {
         p_amount_usd: amount,
         p_network: withdrawalNetwork,
@@ -912,6 +968,11 @@ function App() {
       ])
       setWithdrawalAmount('')
       try {
+        await refreshWalletRecords()
+      } catch (refreshError) {
+        setWithdrawalError(`Withdrawal request was saved, but your wallet could not refresh: ${refreshError instanceof Error ? refreshError.message : 'Unknown error.'}`)
+      }
+      try {
         await syncTransactionToSheet('withdrawal_requests', data)
         setWithdrawalNotice('Withdrawal request submitted for review and sent to the spreadsheet. Payout is not automatic.')
       } catch (syncError) {
@@ -920,13 +981,40 @@ function App() {
     } catch (requestError) {
       setWithdrawalError(requestError instanceof Error ? requestError.message : 'Could not submit the withdrawal request.')
     } finally {
+      setWithdrawalBalanceLoading(false)
       setWithdrawalBusy(false)
+    }
+  }
+
+  async function purchaseSelectedPackage() {
+    if (!supabase || !selectedPlan?.id) {
+      setPackagePurchaseError('This package is not ready to purchase. Refresh the page and try again.')
+      return
+    }
+
+    setPackagePurchaseBusy(true)
+    setPackagePurchaseError('')
+    setPackagePurchaseNotice('')
+    try {
+      const { error } = await supabase.rpc('purchase_package', { p_plan_id: selectedPlan.id })
+      if (error) throw error
+
+      setPackagePurchaseNotice(`The $${selectedPlan.amount} package is active. Its cost was deducted from your wallet.`)
+      try {
+        await refreshWalletRecords()
+      } catch (refreshError) {
+        setPackagePurchaseError(`Package purchase succeeded, but account data could not refresh: ${refreshError instanceof Error ? refreshError.message : 'Unknown error.'}`)
+      }
+    } catch (requestError) {
+      setPackagePurchaseError(requestError instanceof Error ? requestError.message : 'Could not purchase this package.')
+    } finally {
+      setPackagePurchaseBusy(false)
     }
   }
 
   const totalBalance = ledgerEntries.reduce((total, entry) => {
     const amount = Number(entry.amount_usd)
-    if (entry.entry_type === 'withdrawal') return total - amount
+    if (['withdrawal', 'package_purchase'].includes(entry.entry_type)) return total - amount
     if (['deposit', 'task_reward', 'referral_commission', 'refund', 'adjustment'].includes(entry.entry_type)) {
       return total + amount
     }
@@ -935,7 +1023,8 @@ function App() {
   const reservedWithdrawals = withdrawalRequests
     .filter((request) => ['pending', 'processing'].includes(request.status))
     .reduce((total, request) => total + Number(request.amount_usd), 0)
-  const availableBalance = Math.floor(Math.max(0, totalBalance - reservedWithdrawals) * 100) / 100
+  const calculatedAvailableBalance = Math.floor(Math.max(0, totalBalance - reservedWithdrawals) * 100) / 100
+  const availableBalance = databaseAvailableBalance ?? calculatedAvailableBalance
   const withdrawalFee = Math.round(Number(withdrawalAmount || 0) * 5) / 100
   const withdrawalPayout = Math.max(0, Number(withdrawalAmount || 0) - withdrawalFee)
   const withdrawalSuggestions = [5, 10, 20, 50, 100]
@@ -946,6 +1035,24 @@ function App() {
   const todayReward = ledgerEntries
     .filter((entry) => entry.entry_type === 'task_reward' && entry.created_at?.slice(0, 10) === today)
     .reduce((total, entry) => total + Number(entry.amount_usd), 0)
+  const walletActivity = [
+    ...depositRequests.map((request) => ({
+      id: `deposit:${request.id}`,
+      type: 'Deposit',
+      amount: Number(request.amount_usd),
+      status: request.status === 'confirmed' ? 'Approved' : request.status[0].toUpperCase() + request.status.slice(1),
+      createdAt: request.created_at,
+    })),
+    ...ledgerEntries
+      .filter((entry) => entry.entry_type === 'task_reward')
+      .map((entry, index) => ({
+        id: `video-earning:${entry.created_at}:${index}`,
+        type: 'Video earnings',
+        amount: Number(entry.amount_usd),
+        status: 'Earned',
+        createdAt: entry.created_at,
+      })),
+  ].sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
   const approvedToday = taskCompletions.filter((completion) => completion.status === 'approved').length
   const earningPackages = packages.filter((item) => (
     item.status === 'active'
@@ -1078,6 +1185,7 @@ function App() {
           </div>
         )}
         {appError && <p className="auth-error" role="alert">{appError}</p>}
+        {packagePurchaseNotice && <p className="auth-notice" role="status">{packagePurchaseNotice}</p>}
         <header className="topbar">
           <div>
             <p className="eyebrow">{formatUtcDate(today)}</p>
@@ -1196,6 +1304,48 @@ function App() {
                   </article>
                 ))}
               </div>
+            ) : active === 'Wallet' ? (
+              <section className="wallet-history">
+                <div className="review-page-heading">
+                  <div>
+                    <p className="eyebrow">Your account</p>
+                    <h2>Wallet activity</h2>
+                    <p>Approved and rejected deposits, plus earnings from completed video tasks.</p>
+                  </div>
+                  <button
+                    className="secondary-button review-refresh"
+                    type="button"
+                    onClick={() => refreshWalletRecords().catch((requestError) => {
+                      setAppError(requestError instanceof Error ? requestError.message : 'Could not refresh wallet activity.')
+                    })}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div className="review-table-wrap">
+                  <table className="review-table wallet-table">
+                    <thead>
+                      <tr><th>Activity</th><th>Amount</th><th>Status</th><th>Date</th></tr>
+                    </thead>
+                    <tbody>
+                      {walletActivity.map((item) => (
+                        <tr key={item.id}>
+                          <td>{item.type}</td>
+                          <td><strong>${item.amount.toFixed(2)}</strong></td>
+                          <td><span className={`wallet-status ${item.status.toLowerCase()}`}>{item.status}</span></td>
+                          <td>{new Date(item.createdAt).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                      {!dataLoading && walletActivity.length === 0 && (
+                        <tr><td className="review-empty" colSpan="4">No deposits or video earnings yet.</td></tr>
+                      )}
+                      {dataLoading && walletActivity.length === 0 && (
+                        <tr><td className="review-empty" colSpan="4">Loading wallet activity…</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
             ) : active === 'Referrals' ? (
               <div className="referral-page">
                 <section className="referral-intro">
@@ -1206,6 +1356,11 @@ function App() {
                     <div><span>Your referral code</span><strong>{referralLoading ? 'Loading…' : referralCode || 'Unavailable'}</strong></div>
                     <button className="primary-button" onClick={copyReferralLink} disabled={!referralCode}>{referralCopied ? 'Copied!' : 'Copy invite link'}</button>
                   </div>
+                  {!referralLoading && referralCode && (
+                    <a className="referral-full-link" href={`${window.location.origin}/${encodeURIComponent(referralCode)}`}>
+                      {`${window.location.origin}/${encodeURIComponent(referralCode)}`}
+                    </a>
+                  )}
                 </section>
                 {referralError && <p className="auth-error" role="alert">{referralError}</p>}
                 <div className="referral-levels">
@@ -1418,7 +1573,26 @@ function App() {
                 <p className="eyebrow">Selected package</p>
                 <h2 id="modal-title">${selectedPlan.amount} package</h2>
                 <div className="modal-summary"><span>{selectedPlan.tasks} daily tasks</span><span>${selectedPlan.daily} daily earnings</span><span>365 day term</span></div>
-                <button className="primary-button wide" onClick={() => openModal('deposit')}>Continue to deposit</button>
+                {packageBalanceLoading ? (
+                  <p className="preview-modal-note">Checking your latest wallet balance…</p>
+                ) : isSupabaseConfigured && databaseAvailableBalance === null ? (
+                  <p className="auth-error" role="alert">Your wallet balance could not be verified. Refresh the page and try again.</p>
+                ) : (
+                  <p className="withdrawal-available">Wallet balance: <strong>${availableBalance.toFixed(2)}</strong></p>
+                )}
+                <p className="preview-modal-note">Buying this package deducts ${selectedPlan.amount} from your wallet and activates video tasks. Any remaining wallet balance stays available.</p>
+                {packagePurchaseError && <p className="auth-error" role="alert">{packagePurchaseError}</p>}
+                {packagePurchaseNotice && <p className="auth-notice" role="status">{packagePurchaseNotice}</p>}
+                <button
+                  className="primary-button wide"
+                  onClick={purchaseSelectedPackage}
+                  disabled={!isSupabaseConfigured || packageBalanceLoading || packagePurchaseBusy || databaseAvailableBalance === null || !selectedPlan.id || availableBalance < selectedPlan.amount}
+                >
+                  {packagePurchaseBusy ? 'Purchasing…' : `Buy package for $${selectedPlan.amount}`}
+                </button>
+                {!packageBalanceLoading && databaseAvailableBalance !== null && availableBalance < selectedPlan.amount && (
+                  <button className="secondary-button wide" onClick={() => openModal('deposit')}>Deposit funds</button>
+                )}
               </>
             ) : modal === 'deposit' ? (
               <>
@@ -1466,6 +1640,10 @@ function App() {
                 <h2 id="modal-title">Withdraw USDT</h2>
                 {dataLoading ? (
                   <p className="preview-modal-note">Loading your available balance…</p>
+                ) : isSupabaseConfigured && databaseAvailableBalance === null ? (
+                  <p className="auth-error" role="alert">Your available balance could not be verified. Refresh the page and try again.</p>
+                ) : withdrawalBalanceLoading ? (
+                  <p className="preview-modal-note">Checking your latest available balance…</p>
                 ) : availableBalance < 5 ? (
                   <p className="preview-modal-note">Withdrawals start at $5.00. Your available balance is ${availableBalance.toFixed(2)}.</p>
                 ) : (
@@ -1520,7 +1698,7 @@ function App() {
                     <p className="preview-modal-note">Minimum $5.00. The 5% fee is deducted from the requested amount. Requests are subject to review; payout is not automatic. Check the network and address carefully.</p>
                     {withdrawalError && <p className="auth-error" role="alert">{withdrawalError}</p>}
                     {withdrawalNotice && <p className="auth-notice" role="status">{withdrawalNotice}</p>}
-                    <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || withdrawalBusy || Number(withdrawalAmount) < 5 || Number(withdrawalAmount) > availableBalance}>
+                    <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || withdrawalBusy || withdrawalBalanceLoading || Number(withdrawalAmount) < 5 || Number(withdrawalAmount) > availableBalance}>
                       {withdrawalBusy ? 'Submitting…' : 'Submit withdrawal request'}
                     </button>
                   </form>
