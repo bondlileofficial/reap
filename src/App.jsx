@@ -86,6 +86,7 @@ function AuthScreen({ message }) {
             email,
             password,
             options: {
+              emailRedirectTo: window.location.origin,
               data: {
                 display_name: displayName,
                 referral_code: submittedReferralCode,
