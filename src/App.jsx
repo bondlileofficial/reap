@@ -668,10 +668,10 @@ function App() {
 
       try {
         await syncTransactionToSheet('deposit_requests', requestId)
-        setDepositNotice('Deposit request submitted. Waiting for approval.')
       } catch (syncError) {
-        setDepositNotice(`Deposit request was saved, but spreadsheet sync failed: ${syncError instanceof Error ? syncError.message : 'Unknown sync error'}`)
+        console.error('Deposit spreadsheet sync failed after the request was saved.', syncError)
       }
+      setDepositNotice('Deposit request successful. Waiting for approval.')
     } catch (requestError) {
       setDepositError(requestError instanceof Error ? requestError.message : 'Could not submit the deposit request.')
     } finally {
