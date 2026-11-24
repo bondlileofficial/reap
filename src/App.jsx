@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import './App.css'
 
@@ -7,6 +7,11 @@ const authSessionStartedKey = 'reap.auth-session-started-at'
 const siteClosedAtKey = 'reap.site-closed-at'
 const maximumSessionAgeMs = 5 * 60 * 1000
 const closedSiteGraceMs = 10 * 1000
+const localTaskVideoUrls = [
+  '/task%20videos/12248500_1920_1080_30fps.mp4',
+  '/task%20videos/13649040_1920_1080_30fps.mp4',
+  '/task%20videos/15257423_1920_1080_60fps.mp4',
+]
 
 function getUtcDateKey(date = new Date()) {
   return date.toISOString().slice(0, 10)
@@ -149,6 +154,14 @@ function App() {
   const [active, setActive] = useState('Overview')
   const [today, setToday] = useState(getUtcDateKey)
   const [modal, setModal] = useState(null)
+  const [watchTask, setWatchTask] = useState(null)
+  const [watchedSeconds, setWatchedSeconds] = useState(0)
+  const [videoPlaying, setVideoPlaying] = useState(false)
+  const [watchBusy, setWatchBusy] = useState(false)
+  const [watchCompleted, setWatchCompleted] = useState(false)
+  const [watchError, setWatchError] = useState('')
+  const videoElement = useRef(null)
+  const taskCompletionInProgress = useRef(false)
   const [depositNetwork, setDepositNetwork] = useState('TRC20')
   const [addressCopied, setAddressCopied] = useState(false)
   const [depositAmount, setDepositAmount] = useState(String(plans[2].amount))
@@ -181,6 +194,17 @@ function App() {
   const [referralUserId, setReferralUserId] = useState(null)
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
+
+  useEffect(() => {
+    if (!watchTask || !videoPlaying || watchCompleted) return undefined
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        setWatchedSeconds((seconds) => Math.min(30, seconds + 1))
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [watchTask, videoPlaying, watchCompleted])
 
   useEffect(() => {
     let timer
@@ -442,6 +466,7 @@ function App() {
           .from('tasks')
           .select('id, title, video_url, reward_usd')
           .eq('active', true)
+          .in('video_url', localTaskVideoUrls)
           .order('sort_order', { ascending: true })
           .limit(10),
       ]
@@ -481,8 +506,8 @@ function App() {
         const [profileResult, ledgerResult, packagesResult, completionsResult, withdrawalRequestsResult] = await Promise.all([
           supabase.from('profiles').select('id, display_name, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
-          supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
-          supabase.from('task_completions').select('id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', today),
+          supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
+          supabase.from('task_completions').select('id, task_id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', today),
           supabase.from('withdrawal_requests').select('id, amount_usd, status').eq('user_id', session.user.id).in('status', ['pending', 'processing']),
         ])
 
@@ -668,9 +693,87 @@ function App() {
     .filter((entry) => entry.entry_type === 'task_reward' && entry.created_at?.slice(0, 10) === today)
     .reduce((total, entry) => total + Number(entry.amount_usd), 0)
   const approvedToday = taskCompletions.filter((completion) => completion.status === 'approved').length
-  const availableTaskLimit = packages
-    .filter((item) => item.status === 'active')
-    .reduce((maximum, item) => Math.max(maximum, item.plans?.daily_task_limit ?? 0), 0)
+  const earningPackages = packages.filter((item) => (
+    item.status === 'active'
+    && item.plans?.active
+  ))
+  const availableTaskLimit = earningPackages
+    .reduce((total, item) => total + (item.plans?.daily_task_limit ?? 0), 0)
+  const availableDailyReward = earningPackages
+    .reduce((total, item) => total + Number(item.plans?.daily_reward_usd ?? 0), 0)
+  const taskReward = availableTaskLimit ? availableDailyReward / availableTaskLimit : 0
+
+  async function startVideoTask(task) {
+    if (!supabase || !session?.user.id) return
+    setWatchError('')
+    setWatchBusy(true)
+    try {
+      const { error } = await supabase.rpc('begin_video_task', { p_task_id: task.id })
+      if (error) throw error
+
+      taskCompletionInProgress.current = false
+      setWatchTask(task)
+      setWatchedSeconds(0)
+      setVideoPlaying(false)
+      setWatchCompleted(false)
+      setModal('task')
+    } catch (requestError) {
+      setAppError(requestError instanceof Error ? requestError.message : 'Could not start this video task.')
+    } finally {
+      setWatchBusy(false)
+    }
+  }
+
+  const completeVideoTask = useCallback(async (task) => {
+    if (!supabase || !task || taskCompletionInProgress.current || watchedSeconds < 30) return
+    taskCompletionInProgress.current = true
+    setWatchBusy(true)
+    setWatchError('')
+    try {
+      const { data, error } = await supabase.rpc('complete_video_task', { p_task_id: task.id })
+      if (error) throw error
+
+      const reward = Number(data.reward_usd)
+      setTaskCompletions((current) => [
+        ...current.filter((completion) => completion.task_id !== task.id),
+        { id: data.completion_id, task_id: task.id, status: 'approved', completed_on: today },
+      ])
+      setLedgerEntries((current) => [
+        {
+          entry_type: 'task_reward',
+          amount_usd: reward,
+          status: 'confirmed',
+          created_at: data.created_at,
+        },
+        ...current,
+      ])
+      setWatchCompleted(true)
+      setVideoPlaying(false)
+      if (videoElement.current) videoElement.current.pause()
+    } catch (requestError) {
+      taskCompletionInProgress.current = false
+      setWatchError(requestError instanceof Error ? requestError.message : 'Could not confirm the task reward.')
+    } finally {
+      setWatchBusy(false)
+    }
+  }, [today, watchedSeconds])
+
+  useEffect(() => {
+    if (watchedSeconds >= 30 && watchTask && !watchCompleted) {
+      const timer = window.setTimeout(() => completeVideoTask(watchTask), 0)
+      return () => window.clearTimeout(timer)
+    }
+    return undefined
+  }, [watchedSeconds, watchTask, watchCompleted, completeVideoTask])
+
+  function closeVideoTask() {
+    if (videoElement.current) videoElement.current.pause()
+    setVideoPlaying(false)
+    setWatchTask(null)
+    setWatchCompleted(false)
+    setWatchError('')
+    setModal(null)
+  }
 
   if (isSupabaseConfigured && authLoading) {
     return <main className="auth-page"><p className="auth-description">Loading your secure session…</p></main>
@@ -759,19 +862,34 @@ function App() {
 
             <section className="task-grid">
               {tasks.length
-                ? tasks.slice(0, 5).map((task, index) => (
-                    <article className="task-card" key={task.id}>
+                ? tasks.slice(0, 5).map((task, index) => {
+                    const completion = taskCompletions.find((item) => item.task_id === task.id)
+                    const completed = completion?.status === 'approved'
+                    const inProgress = completion?.status === 'pending'
+                    const disabled = watchBusy
+                      || !session?.user.id
+                      || availableTaskLimit === 0
+                      || completed
+                      || (!inProgress && approvedToday >= availableTaskLimit)
+                    return (
+                    <article className={completed ? 'task-card completed' : 'task-card'} key={task.id}>
                       <div className="task-icon">{String(index + 1).padStart(2, '0')}</div>
                       <div className="task-info">
                         <h3>{task.title}</h3>
-                        <p>{task.video_url ? 'Watch and complete' : 'Task details'}</p>
+                        <p>{completed ? 'Reward added to your balance' : task.video_url ? 'Watch for 30 seconds' : 'Task details'}</p>
                       </div>
                       <div className="task-reward">
-                        <strong>${Number(task.reward_usd).toFixed(2)}</strong>
-                        <button disabled>Coming soon</button>
+                        <strong>{availableTaskLimit ? `$${taskReward.toFixed(2)}` : '—'}</strong>
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => startVideoTask(task)}
+                        >
+                          {completed ? 'Completed' : inProgress ? 'Continue' : !session?.user.id ? 'Sign in' : availableTaskLimit === 0 ? 'Package required' : approvedToday >= availableTaskLimit ? 'Daily limit' : watchBusy ? 'Loading…' : 'Watch video'}
+                        </button>
                       </div>
                     </article>
-                  ))
+                  )})
                 : [0, 1, 2, 3, 4].map((task) => (
                     <article className="task-card" key={task}>
                       <div className="task-icon">{String(task + 1).padStart(2, '0')}</div>
@@ -864,10 +982,41 @@ function App() {
       </main>
 
       {modal && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setModal(null)}>
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-            <button className="modal-close" onClick={() => setModal(null)} aria-label="Close">×</button>
-            {modal === 'choose' ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && (modal === 'task' ? closeVideoTask() : setModal(null))}>
+          <section className={modal === 'task' ? 'modal task-modal' : 'modal'} role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <button className="modal-close" onClick={() => modal === 'task' ? closeVideoTask() : setModal(null)} aria-label="Close">×</button>
+            {modal === 'task' ? (
+              <>
+                <p className="eyebrow">Video task</p>
+                <h2 id="modal-title">{watchTask?.title}</h2>
+                <p className="preview-modal-note">This reward is allocated from the daily reward configured for your active package; the video itself does not generate revenue.</p>
+                <video
+                  ref={videoElement}
+                  className="task-video-player"
+                  src={watchTask?.video_url}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  onPlay={() => setVideoPlaying(true)}
+                  onPause={() => setVideoPlaying(false)}
+                  onEnded={() => setVideoPlaying(false)}
+                />
+                {watchCompleted ? (
+                  <p className="auth-notice" role="status">Task complete. ${taskReward.toFixed(2)} has been added to your balance.</p>
+                ) : (
+                  <>
+                    <p className="task-timer" role="status">
+                      {watchBusy ? 'Confirming your reward…' : videoPlaying ? `Keep watching: ${30 - watchedSeconds} seconds remaining` : `Play the video to start: ${30 - watchedSeconds} seconds remaining`}
+                    </p>
+                    <div className="progress-track"><div className="progress-fill" style={{ width: `${watchedSeconds / 30 * 100}%` }} /></div>
+                  </>
+                )}
+                {watchError && <p className="auth-error" role="alert">{watchError}</p>}
+                {watchError && watchedSeconds >= 30 && (
+                  <button className="primary-button wide" onClick={() => completeVideoTask(watchTask)} disabled={watchBusy}>Retry reward confirmation</button>
+                )}
+              </>
+            ) : modal === 'choose' ? (
               <>
                 <p className="eyebrow">Selected package</p>
                 <h2 id="modal-title">${selectedPlan.amount} package</h2>

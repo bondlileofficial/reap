@@ -556,6 +556,26 @@
   box-shadow: 0 24px 70px rgba(12,32,22,.22);
 }
 
+.task-modal {
+  width: min(680px, 100%);
+}
+
+.task-video-player {
+  display: block;
+  width: 100%;
+  max-height: min(55vh, 420px);
+  margin: 0 0 16px;
+  border-radius: 8px;
+  background: #101510;
+}
+
+.task-timer {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .modal h2 {
   margin: 0 0 20px;
   font-size: 25px;
