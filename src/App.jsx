@@ -3,6 +3,23 @@ import { isSupabaseConfigured, supabase } from './lib/supabase'
 import './App.css'
 
 const tronDepositAddress = 'TL2Lv1QKRgswFNLJ9km6HzHMr8WaSsH3ij'
+const authSessionStartedKey = 'reap.auth-session-started-at'
+const siteClosedAtKey = 'reap.site-closed-at'
+const maximumSessionAgeMs = 5 * 60 * 1000
+const closedSiteGraceMs = 10 * 1000
+
+function getUtcDateKey(date = new Date()) {
+  return date.toISOString().slice(0, 10)
+}
+
+function formatUtcDate(dateKey) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    timeZone: 'UTC',
+  }).format(new Date(`${dateKey}T00:00:00.000Z`))
+}
 
 function getReferralCodeFromUrl() {
   const queryCode = new URLSearchParams(window.location.search).get('ref')
@@ -130,9 +147,14 @@ const Icon = ({ name, size = 20 }) => {
 
 function App() {
   const [active, setActive] = useState('Overview')
+  const [today, setToday] = useState(getUtcDateKey)
   const [modal, setModal] = useState(null)
   const [depositNetwork, setDepositNetwork] = useState('TRC20')
   const [addressCopied, setAddressCopied] = useState(false)
+  const [depositAmount, setDepositAmount] = useState(String(plans[2].amount))
+  const [depositTransactionId, setDepositTransactionId] = useState('')
+  const [depositBusy, setDepositBusy] = useState(false)
+  const [depositNotice, setDepositNotice] = useState('')
   const [depositError, setDepositError] = useState('')
   const [withdrawalAmount, setWithdrawalAmount] = useState('')
   const [withdrawalNetwork, setWithdrawalNetwork] = useState('TRC20')
@@ -160,10 +182,42 @@ function App() {
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
 
+  useEffect(() => {
+    let timer
+
+    function updateToday() {
+      if (timer) window.clearTimeout(timer)
+
+      const now = new Date()
+      setToday(getUtcDateKey(now))
+      const nextUtcMidnight = Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() + 1,
+      )
+      timer = window.setTimeout(updateToday, nextUtcMidnight - now.getTime() + 50)
+    }
+
+    function updateWhenVisible() {
+      if (document.visibilityState === 'visible') updateToday()
+    }
+
+    updateToday()
+    document.addEventListener('visibilitychange', updateWhenVisible)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', updateWhenVisible)
+    }
+  }, [])
+
   const openModal = (type) => {
     if (type === 'deposit') {
       setDepositNetwork('TRC20')
       setAddressCopied(false)
+      setDepositAmount(String(selectedPlan.amount))
+      setDepositTransactionId('')
+      setDepositBusy(false)
+      setDepositNotice('')
       setDepositError('')
     }
     if (type === 'withdraw') {
@@ -188,20 +242,154 @@ function App() {
   useEffect(() => {
     if (!supabase) return undefined
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession)
-      setAuthError('')
+    let active = true
+    let signOutScheduled = false
+
+    function expireSession(message) {
+      try {
+        localStorage.removeItem(authSessionStartedKey)
+      } catch (storageError) {
+        message = `${message} ${storageError instanceof Error ? storageError.message : 'Session storage could not be cleared.'}`
+      }
+      setSession(null)
+      setAuthError(message)
       setAuthLoading(false)
+      if (!signOutScheduled) {
+        signOutScheduled = true
+        window.setTimeout(() => {
+          supabase.auth.signOut().catch((signOutError) => {
+            setAuthError(signOutError instanceof Error ? signOutError.message : 'Could not end the expired session.')
+          })
+        }, 0)
+      }
+    }
+
+    function acceptSession(nextSession, eventName = 'INITIAL_SESSION') {
+      if (!active) return
+
+      try {
+        if (!nextSession) {
+          localStorage.removeItem(authSessionStartedKey)
+          setSession(null)
+          setAuthError('')
+          setAuthLoading(false)
+          return
+        }
+
+        const now = Date.now()
+        const closedAt = Number(localStorage.getItem(siteClosedAtKey))
+        if (eventName !== 'SIGNED_IN' && Number.isFinite(closedAt) && closedAt > 0) {
+          localStorage.removeItem(siteClosedAtKey)
+          if (now - closedAt > closedSiteGraceMs) {
+            expireSession('You were signed out because the site was closed for more than 10 seconds.')
+            return
+          }
+        } else if (eventName === 'SIGNED_IN') {
+          localStorage.removeItem(siteClosedAtKey)
+        }
+
+        let startedAt = Number(localStorage.getItem(authSessionStartedKey))
+        if (eventName === 'SIGNED_IN' || !Number.isFinite(startedAt) || startedAt <= 0) {
+          startedAt = now
+          localStorage.setItem(authSessionStartedKey, String(startedAt))
+        }
+
+        if (now - startedAt >= maximumSessionAgeMs) {
+          expireSession('Your five-minute session has expired. Please sign in again.')
+          return
+        }
+
+        setSession(nextSession)
+        setAuthError('')
+        setAuthLoading(false)
+      } catch (storageError) {
+        expireSession(storageError instanceof Error ? storageError.message : 'Could not validate your secure session.')
+      }
+    }
+
+    function markSiteClosed() {
+      try {
+        if (localStorage.getItem(authSessionStartedKey)) {
+          localStorage.setItem(siteClosedAtKey, String(Date.now()))
+        }
+      } catch (storageError) {
+        setAuthError(storageError instanceof Error ? storageError.message : 'Could not record the secure session state.')
+      }
+    }
+
+    const handlePageShow = () => {
+      supabase.auth.getSession().then(({ data, error }) => {
+        if (!active) return
+        if (error) {
+          setAuthError(error.message)
+          setAuthLoading(false)
+          return
+        }
+        acceptSession(data.session)
+      })
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      acceptSession(nextSession, event)
     })
+
+    window.addEventListener('pagehide', markSiteClosed)
+    window.addEventListener('pageshow', handlePageShow)
 
     supabase.auth.getSession().then(({ data, error }) => {
-      if (error) setAuthError(error.message)
-      else setSession(data.session)
-      setAuthLoading(false)
+      if (!active) return
+      if (error) {
+        setAuthError(error.message)
+        setAuthLoading(false)
+      } else {
+        acceptSession(data.session)
+      }
     })
 
-    return () => subscription.unsubscribe()
+    return () => {
+      active = false
+      subscription.unsubscribe()
+      window.removeEventListener('pagehide', markSiteClosed)
+      window.removeEventListener('pageshow', handlePageShow)
+    }
   }, [])
+
+  useEffect(() => {
+    if (!session) return undefined
+
+    let signOutPending = false
+
+    function enforceSessionAge() {
+      if (signOutPending) return
+
+      try {
+        const startedAt = Number(localStorage.getItem(authSessionStartedKey))
+        if (!Number.isFinite(startedAt) || startedAt <= 0 || Date.now() - startedAt >= maximumSessionAgeMs) {
+          signOutPending = true
+          localStorage.removeItem(authSessionStartedKey)
+          supabase.auth.signOut().then(({ error }) => {
+            if (error) setAuthError(error.message)
+          })
+        }
+      } catch (storageError) {
+        signOutPending = true
+        setAuthError(storageError instanceof Error ? storageError.message : 'Could not validate your secure session.')
+        supabase.auth.signOut().then(({ error }) => {
+          if (error) setAuthError(error.message)
+        })
+      }
+    }
+
+    const timer = window.setInterval(enforceSessionAge, 1000)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') enforceSessionAge()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [session])
 
   useEffect(() => {
     if (!session?.user.id) return undefined
@@ -294,7 +482,7 @@ function App() {
           supabase.from('profiles').select('id, display_name, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
-          supabase.from('task_completions').select('id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', new Date().toISOString().slice(0, 10)),
+          supabase.from('task_completions').select('id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', today),
           supabase.from('withdrawal_requests').select('id, amount_usd, status').eq('user_id', session.user.id).in('status', ['pending', 'processing']),
         ])
 
@@ -325,7 +513,7 @@ function App() {
 
     loadDatabaseData()
     return () => { activeRequest = false }
-  }, [session?.user.id])
+  }, [session?.user.id, today])
 
   async function copyReferralLink() {
     const referralUrl = `${window.location.origin}/${encodeURIComponent(referralCode)}`
@@ -346,6 +534,68 @@ function App() {
       window.setTimeout(() => setAddressCopied(false), 2000)
     } catch (copyError) {
       setDepositError(copyError instanceof Error ? copyError.message : 'Could not copy the deposit address.')
+    }
+  }
+
+  async function syncTransactionToSheet(table, id) {
+    const { data: { session: currentSession }, error } = await supabase.auth.getSession()
+    if (error) throw error
+    if (!currentSession?.access_token) throw new Error('Your session expired. Sign in again to sync this request.')
+
+    const response = await fetch('/.netlify/functions/sync-transactions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${currentSession.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ table, id }),
+    })
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}))
+      throw new Error(result.error || 'Transaction was saved, but spreadsheet sync could not be confirmed.')
+    }
+  }
+
+  async function submitDepositRequest(event) {
+    event.preventDefault()
+    setDepositError('')
+    setDepositNotice('')
+
+    const amount = Number(depositAmount)
+    const transactionId = depositTransactionId.trim()
+    if (!Number.isFinite(amount) || amount < 5) {
+      setDepositError('Enter a deposit amount of at least $5.00.')
+      return
+    }
+    if (!/^[a-fA-F0-9]{64}$/.test(transactionId)) {
+      setDepositError('Enter the 64-character transaction ID from the TRON (TRC20) transfer.')
+      return
+    }
+    if (!supabase) {
+      setDepositError('Connect Supabase before submitting a deposit request.')
+      return
+    }
+
+    setDepositBusy(true)
+    try {
+      const { data: requestId, error } = await supabase.rpc('request_deposit', {
+        p_amount_usd: amount,
+        p_network: 'TRC20',
+        p_provider_reference: transactionId,
+      })
+      if (error) throw error
+
+      try {
+        await syncTransactionToSheet('deposit_requests', requestId)
+        setDepositNotice('Deposit request saved and sent for manual verification.')
+      } catch (syncError) {
+        setDepositNotice(`Deposit request was saved, but spreadsheet sync failed: ${syncError instanceof Error ? syncError.message : 'Unknown sync error'}`)
+      }
+      setDepositTransactionId('')
+    } catch (requestError) {
+      setDepositError(requestError instanceof Error ? requestError.message : 'Could not submit the deposit request.')
+    } finally {
+      setDepositBusy(false)
     }
   }
 
@@ -382,7 +632,12 @@ function App() {
         { id: data, amount_usd: amount, status: 'pending' },
       ])
       setWithdrawalAmount('')
-      setWithdrawalNotice('Withdrawal request submitted for review. Payout is not automatic.')
+      try {
+        await syncTransactionToSheet('withdrawal_requests', data)
+        setWithdrawalNotice('Withdrawal request submitted for review and sent to the spreadsheet. Payout is not automatic.')
+      } catch (syncError) {
+        setWithdrawalNotice(`Withdrawal request was saved, but spreadsheet sync failed: ${syncError instanceof Error ? syncError.message : 'Unknown sync error'}`)
+      }
     } catch (requestError) {
       setWithdrawalError(requestError instanceof Error ? requestError.message : 'Could not submit the withdrawal request.')
     } finally {
@@ -410,7 +665,7 @@ function App() {
     withdrawalSuggestions.push(availableBalance)
   }
   const todayReward = ledgerEntries
-    .filter((entry) => entry.entry_type === 'task_reward' && entry.created_at?.slice(0, 10) === new Date().toISOString().slice(0, 10))
+    .filter((entry) => entry.entry_type === 'task_reward' && entry.created_at?.slice(0, 10) === today)
     .reduce((total, entry) => total + Number(entry.amount_usd), 0)
   const approvedToday = taskCompletions.filter((completion) => completion.status === 'approved').length
   const availableTaskLimit = packages
@@ -466,7 +721,7 @@ function App() {
         {appError && <p className="auth-error" role="alert">{appError}</p>}
         <header className="topbar">
           <div>
-            <p className="eyebrow">Monday, 23 November</p>
+            <p className="eyebrow">{formatUtcDate(today)}</p>
             <h1>{active}</h1>
           </div>
           <div className="top-actions">
@@ -623,30 +878,42 @@ function App() {
               <>
                 <p className="eyebrow">Add funds</p>
                 <h2 id="modal-title">Deposit crypto</h2>
-                <label>Amount (USD)<input type="number" defaultValue={selectedPlan.amount} min="5" /></label>
-                <label>Cryptocurrency
-                  <select defaultValue="USDT"><option value="USDT">USDT</option></select>
-                </label>
-                <label>Network
-                  <select value={depositNetwork} onChange={(event) => { setDepositNetwork(event.target.value); setAddressCopied(false); setDepositError('') }}>
-                    <option value="TRC20">TRON (TRC20)</option>
-                    <option value="BEP20">BNB (BEP20)</option>
-                  </select>
-                </label>
-                {depositNetwork === 'TRC20' && (
+                <form onSubmit={submitDepositRequest}>
+                  <label>Amount (USD)
+                    <input type="number" min="5" step="0.01" value={depositAmount} onChange={(event) => setDepositAmount(event.target.value)} required />
+                  </label>
+                  <label>Cryptocurrency
+                    <select value="USDT" disabled><option value="USDT">USDT</option></select>
+                  </label>
+                  <label>Network
+                    <select value={depositNetwork} disabled><option value="TRC20">TRON (TRC20)</option></select>
+                  </label>
                   <div className="deposit-address">
                     <span>USDT deposit address (TRC20)</span>
                     <code>{tronDepositAddress}</code>
                     <button className="secondary-button wide" type="button" onClick={copyDepositAddress}>
                       {addressCopied ? 'Address copied' : 'Copy deposit address'}
                     </button>
-                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send BEP20 or other tokens to this address. Transfers are not automatically detected or credited; verify the address and network before sending.</p>
+                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send other tokens. After sending, enter the transaction ID below. Deposits remain pending until manually verified and are not automatically credited.</p>
                   </div>
-                )}
-                {depositNetwork === 'BEP20' && (
-                  <p className="preview-modal-note">Deposits on BNB (BEP20) are not supported. Select TRON (TRC20) to view the deposit address.</p>
-                )}
-                {depositError && <p className="auth-error" role="alert">{depositError}</p>}
+                  <label>TRON transaction ID
+                    <input
+                      type="text"
+                      autoComplete="off"
+                      minLength="64"
+                      maxLength="64"
+                      pattern="[A-Fa-f0-9]{64}"
+                      value={depositTransactionId}
+                      onChange={(event) => setDepositTransactionId(event.target.value)}
+                      required
+                    />
+                  </label>
+                  {depositError && <p className="auth-error" role="alert">{depositError}</p>}
+                  {depositNotice && <p className="auth-notice" role="status">{depositNotice}</p>}
+                  <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || depositBusy}>
+                    {depositBusy ? 'Submitting…' : 'Submit deposit request'}
+                  </button>
+                </form>
               </>
             ) : (
               <>
