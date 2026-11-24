@@ -4,6 +4,12 @@ import './App.css'
 
 const tronDepositAddress = 'TL2Lv1QKRgswFNLJ9km6HzHMr8WaSsH3ij'
 
+function getReferralCodeFromUrl() {
+  const queryCode = new URLSearchParams(window.location.search).get('ref')
+  const pathCode = window.location.pathname.split('/').filter(Boolean)[0]
+  return (queryCode || pathCode || '').trim().toUpperCase()
+}
+
 const plans = [
   { amount: 5, daily: 0.85, tasks: 3, accent: '#d9efaf' },
   { amount: 10, daily: 1, tasks: 4, accent: '#ffd7a5' },
@@ -22,7 +28,7 @@ function AuthScreen({ message }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [referralCode, setReferralCode] = useState(() => new URLSearchParams(window.location.search).get('ref') || '')
+  const [referralCode, setReferralCode] = useState(getReferralCodeFromUrl)
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -36,6 +42,10 @@ function AuthScreen({ message }) {
       const password = String(formData.get('password'))
       const displayName = String(formData.get('name') || '').trim()
       const submittedReferralCode = String(formData.get('referral_code') || '').trim().toUpperCase()
+      if (mode === 'sign-up' && !submittedReferralCode) {
+        setError('A referral code is required to create an account.')
+        return
+      }
       const result = mode === 'sign-in'
         ? await supabase.auth.signInWithPassword({ email, password })
         : await supabase.auth.signUp({
@@ -44,7 +54,7 @@ function AuthScreen({ message }) {
             options: {
               data: {
                 display_name: displayName,
-                ...(submittedReferralCode ? { referral_code: submittedReferralCode } : {}),
+                referral_code: submittedReferralCode,
               },
             },
           })
@@ -76,7 +86,7 @@ function AuthScreen({ message }) {
             <label>Name<input name="name" type="text" autoComplete="name" maxLength="80" required /></label>
           )}
           {mode === 'sign-up' && (
-            <label>Referral code (optional)
+            <label>Referral code (required)
               <input
                 name="referral_code"
                 type="text"
@@ -84,6 +94,7 @@ function AuthScreen({ message }) {
                 maxLength="12"
                 value={referralCode}
                 onChange={(event) => setReferralCode(event.target.value.toUpperCase())}
+                required
               />
             </label>
           )}
@@ -317,7 +328,7 @@ function App() {
   }, [session?.user.id])
 
   async function copyReferralLink() {
-    const referralUrl = `${window.location.origin}/?ref=${encodeURIComponent(referralCode)}`
+    const referralUrl = `${window.location.origin}/${encodeURIComponent(referralCode)}`
     try {
       await navigator.clipboard.writeText(referralUrl)
       setReferralCopied(true)

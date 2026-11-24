@@ -7,11 +7,11 @@ Reap is a React app built with Vite and Supabase. Supabase Auth manages account 
 1. Create a project at [supabase.com](https://supabase.com/).
 2. In **Project Settings → API**, copy the Project URL and the publishable key (or legacy anon key).
 3. Copy `.env.example` to `.env.local` and fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Never put a service-role key in a `VITE_` variable or browser code.
-4. In the Supabase SQL Editor, run [`supabase/migrations/202611230001_initial_schema.sql`](./supabase/migrations/202611230001_initial_schema.sql), then [`supabase/migrations/202611230002_referrals.sql`](./supabase/migrations/202611230002_referrals.sql), then [`supabase/migrations/202611240001_withdrawal_requests.sql`](./supabase/migrations/202611240001_withdrawal_requests.sql). If the first two migrations are already applied, run only the withdrawal requests migration.
+4. In the Supabase SQL Editor, run [`supabase/migrations/202611230001_initial_schema.sql`](./supabase/migrations/202611230001_initial_schema.sql), then [`supabase/migrations/202611230002_referrals.sql`](./supabase/migrations/202611230002_referrals.sql), then [`supabase/migrations/202611240001_withdrawal_requests.sql`](./supabase/migrations/202611240001_withdrawal_requests.sql), and finally [`supabase/migrations/202611240002_referral_required.sql`](./supabase/migrations/202611240002_referral_required.sql). If earlier migrations are already applied, run only the migrations not yet applied.
 5. In **Authentication → URL Configuration**, set the local site URL to `http://localhost:5173` and add your production URL when deploying.
 6. Start the app with `npm run dev`.
 
-Without Supabase environment variables, the dashboard opens in preview mode so it can be explored without a database connection. Account features, referral data, and crypto actions remain unavailable in preview mode. Once configured, users can create accounts and sign in; Supabase Auth persists and refreshes their sessions. New users can enter a referral code or follow a `?ref=CODE` link. Email confirmation behavior is controlled in the Supabase Auth settings.
+Without Supabase environment variables, the dashboard opens in preview mode so it can be explored without a database connection. Account features, referral data, and crypto actions remain unavailable in preview mode. Once configured, users can create accounts and sign in; Supabase Auth persists and refreshes their sessions. New users must enter a valid referral code or follow a `https://your-site/REFERRALCODE` link. Email confirmation behavior is controlled in the Supabase Auth settings.
 
 ## Deploy to Netlify
 
