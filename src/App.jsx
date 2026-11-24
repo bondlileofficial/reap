@@ -118,7 +118,14 @@ const Icon = ({ name, size = 20 }) => {
 function App() {
   const [active, setActive] = useState('Overview')
   const [modal, setModal] = useState(null)
+  const [dbPlans, setDbPlans] = useState(plans)
   const [selectedPlan, setSelectedPlan] = useState(plans[2])
+  const [tasks, setTasks] = useState([])
+  const [ledgerEntries, setLedgerEntries] = useState([])
+  const [packages, setPackages] = useState([])
+  const [taskCompletions, setTaskCompletions] = useState([])
+  const [profile, setProfile] = useState(null)
+  const [dataLoading, setDataLoading] = useState(isSupabaseConfigured)
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
   const [authError, setAuthError] = useState('')
@@ -192,6 +199,94 @@ function App() {
     return () => { activeRequest = false }
   }, [session?.user.id])
 
+  useEffect(() => {
+    if (!supabase) return undefined
+
+    let activeRequest = true
+
+    async function loadDatabaseData() {
+      setDataLoading(true)
+
+      const publicQueries = [
+        supabase
+          .from('plans')
+          .select('id, amount_usd, daily_task_limit, daily_reward_usd')
+          .eq('active', true)
+          .order('amount_usd', { ascending: true }),
+        supabase
+          .from('tasks')
+          .select('id, title, video_url, reward_usd')
+          .eq('active', true)
+          .order('sort_order', { ascending: true })
+          .limit(10),
+      ]
+
+      try {
+        const [plansResult, tasksResult] = await Promise.all(publicQueries)
+
+        if (!activeRequest) return
+
+        if (!plansResult.error && plansResult.data?.length) {
+          setDbPlans(plansResult.data.map((plan, index) => ({
+            id: plan.id,
+            amount: Number(plan.amount_usd),
+            daily: Number(plan.daily_reward_usd ?? 0),
+            tasks: plan.daily_task_limit,
+            accent: plans[index]?.accent ?? '#d9efaf',
+            popular: index === 2,
+          })))
+        } else if (plansResult.error) {
+          setAppError(plansResult.error.message)
+        }
+
+        if (!tasksResult.error) setTasks(tasksResult.data ?? [])
+        else setAppError(tasksResult.error.message)
+      } catch (requestError) {
+        if (activeRequest) {
+          setAppError(requestError instanceof Error ? requestError.message : 'Could not load database records.')
+        }
+      }
+
+      if (!session?.user.id) {
+        if (activeRequest) setDataLoading(false)
+        return
+      }
+
+      try {
+        const [profileResult, ledgerResult, packagesResult, completionsResult] = await Promise.all([
+          supabase.from('profiles').select('id, display_name, referral_code').eq('id', session.user.id).single(),
+          supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
+          supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
+          supabase.from('task_completions').select('id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', new Date().toISOString().slice(0, 10)),
+        ])
+
+        if (!activeRequest) return
+
+        if (!profileResult.error) setProfile(profileResult.data)
+        if (!ledgerResult.error) setLedgerEntries(ledgerResult.data ?? [])
+        if (!packagesResult.error) setPackages(packagesResult.data ?? [])
+        if (!completionsResult.error) setTaskCompletions(completionsResult.data ?? [])
+
+        const personalError = [
+          profileResult.error,
+          ledgerResult.error,
+          packagesResult.error,
+          completionsResult.error,
+        ].find(Boolean)
+        if (personalError) setAppError(personalError.message)
+      } catch (requestError) {
+        if (activeRequest) {
+          setAppError(requestError instanceof Error ? requestError.message : 'Could not load account records.')
+        }
+      } finally {
+        if (activeRequest) setDataLoading(false)
+      }
+    }
+
+    loadDatabaseData()
+    return () => { activeRequest = false }
+  }, [session?.user.id])
+
   async function copyReferralLink() {
     const referralUrl = `${window.location.origin}/?ref=${encodeURIComponent(referralCode)}`
     try {
@@ -202,6 +297,22 @@ function App() {
       setReferralError(copyError instanceof Error ? copyError.message : 'Could not copy the referral link.')
     }
   }
+
+  const totalBalance = ledgerEntries.reduce((total, entry) => {
+    const amount = Number(entry.amount_usd)
+    if (entry.entry_type === 'withdrawal') return total - amount
+    if (['deposit', 'task_reward', 'referral_commission', 'refund', 'adjustment'].includes(entry.entry_type)) {
+      return total + amount
+    }
+    return total
+  }, 0)
+  const todayReward = ledgerEntries
+    .filter((entry) => entry.entry_type === 'task_reward' && entry.created_at?.slice(0, 10) === new Date().toISOString().slice(0, 10))
+    .reduce((total, entry) => total + Number(entry.amount_usd), 0)
+  const approvedToday = taskCompletions.filter((completion) => completion.status === 'approved').length
+  const availableTaskLimit = packages
+    .filter((item) => item.status === 'active')
+    .reduce((maximum, item) => Math.max(maximum, item.plans?.daily_task_limit ?? 0), 0)
 
   if (isSupabaseConfigured && authLoading) {
     return <main className="auth-page"><p className="auth-description">Loading your secure session…</p></main>
@@ -257,7 +368,9 @@ function App() {
           </div>
           <div className="top-actions">
             <button className="icon-button" aria-label="Notifications"><Icon name="bell" /><span className="notification-dot" /></button>
-            <button className="avatar" aria-label="Open profile">JD</button>
+            <button className="avatar" aria-label="Open profile">
+              {(profile?.display_name || session?.user.email || 'U').trim().slice(0, 2).toUpperCase()}
+            </button>
           </div>
         </header>
 
@@ -267,7 +380,7 @@ function App() {
               <div className="balance-main">
                 <p>Total balance</p>
                 <div className="balance-row">
-                  <h2>$0.00</h2>
+                  <h2>${totalBalance.toFixed(2)}</h2>
                 </div>
                 <div className="balance-actions">
                   <button className="primary-button" onClick={() => openModal('deposit')}><Icon name="down" size={17} />Deposit</button>
@@ -275,9 +388,9 @@ function App() {
                 </div>
               </div>
               <div className="earnings">
-                <div className="earnings-head"><span>Today's earnings</span><strong>$0.00</strong></div>
-                <div className="progress-track"><div className="progress-fill" style={{ width: '0%' }} /></div>
-                <p><b>0 of 0</b> tasks completed</p>
+                <div className="earnings-head"><span>Today's earnings</span><strong>${todayReward.toFixed(2)}</strong></div>
+                <div className="progress-track"><div className="progress-fill" style={{ width: `${availableTaskLimit ? Math.min(100, approvedToday / availableTaskLimit * 100) : 0}%` }} /></div>
+                <p><b>{approvedToday} of {availableTaskLimit}</b> tasks completed</p>
               </div>
             </section>
 
@@ -287,19 +400,33 @@ function App() {
             </section>
 
             <section className="task-grid">
-              {[0, 1, 2, 3, 4].map((task) => (
-                <article className="task-card" key={task}>
-                  <div className="task-icon">{String(task + 1).padStart(2, '0')}</div>
-                  <div className="task-info">
-                    <h3>Task unavailable</h3>
-                    <p>Tasks will appear after setup</p>
-                  </div>
-                  <div className="task-reward">
-                    <strong>—</strong>
-                    <button disabled>Coming soon</button>
-                  </div>
-                </article>
-              ))}
+              {tasks.length
+                ? tasks.slice(0, 5).map((task, index) => (
+                    <article className="task-card" key={task.id}>
+                      <div className="task-icon">{String(index + 1).padStart(2, '0')}</div>
+                      <div className="task-info">
+                        <h3>{task.title}</h3>
+                        <p>{task.video_url ? 'Watch and complete' : 'Task details'}</p>
+                      </div>
+                      <div className="task-reward">
+                        <strong>${Number(task.reward_usd).toFixed(2)}</strong>
+                        <button disabled>Coming soon</button>
+                      </div>
+                    </article>
+                  ))
+                : [0, 1, 2, 3, 4].map((task) => (
+                    <article className="task-card" key={task}>
+                      <div className="task-icon">{String(task + 1).padStart(2, '0')}</div>
+                      <div className="task-info">
+                        <h3>{dataLoading ? 'Loading tasks…' : 'No active tasks'}</h3>
+                        <p>{dataLoading ? 'Reading the database' : 'Check back later'}</p>
+                      </div>
+                      <div className="task-reward">
+                        <strong>—</strong>
+                        <button disabled>{dataLoading ? 'Loading' : 'Unavailable'}</button>
+                      </div>
+                    </article>
+                  ))}
             </section>
 
             <section className="section-heading package-heading">
@@ -308,7 +435,7 @@ function App() {
             </section>
 
             <section className="package-strip">
-              {plans.slice(0, 4).map((plan) => (
+              {dbPlans.slice(0, 4).map((plan) => (
                 <article className="package-card" style={{ '--plan-accent': plan.accent }} key={plan.amount}>
                   {plan.popular && <span className="popular">Popular</span>}
                   <p>Package</p>
@@ -328,7 +455,7 @@ function App() {
           <section className="placeholder-panel">
             {active === 'Packages' ? (
               <div className="full-package-grid">
-                {plans.map((plan) => (
+                {dbPlans.map((plan) => (
                   <article className="package-card" style={{ '--plan-accent': plan.accent }} key={plan.amount}>
                     {plan.popular && <span className="popular">Popular</span>}
                     <p>Package</p><h3>${plan.amount}</h3>
