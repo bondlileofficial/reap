@@ -182,6 +182,8 @@ function App() {
   const [depositNetwork, setDepositNetwork] = useState('TRC20')
   const [addressCopied, setAddressCopied] = useState(false)
   const [depositAmount, setDepositAmount] = useState(String(plans[2].amount))
+  const [depositProofFile, setDepositProofFile] = useState(null)
+  const depositProofInput = useRef(null)
   const [depositBusy, setDepositBusy] = useState(false)
   const [depositNotice, setDepositNotice] = useState('')
   const [depositError, setDepositError] = useState('')
@@ -204,6 +206,15 @@ function App() {
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileError, setProfileError] = useState('')
   const [profileNotice, setProfileNotice] = useState('')
+  const [transactionReviewerId, setTransactionReviewerId] = useState(null)
+  const [reviewRoleCheckedUserId, setReviewRoleCheckedUserId] = useState(null)
+  const [reviewQueue, setReviewQueue] = useState([])
+  const [reviewQueueUserId, setReviewQueueUserId] = useState(null)
+  const [reviewProofUrls, setReviewProofUrls] = useState({})
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewBusyKey, setReviewBusyKey] = useState('')
+  const [reviewError, setReviewError] = useState('')
+  const [reviewNotice, setReviewNotice] = useState('')
   const [dataLoading, setDataLoading] = useState(isSupabaseConfigured)
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(isSupabaseConfigured)
@@ -215,6 +226,9 @@ function App() {
   const [referralUserId, setReferralUserId] = useState(null)
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
+  const userId = session?.user.id
+  const canReviewTransactions = Boolean(userId && reviewRoleCheckedUserId === userId && transactionReviewerId === userId)
+  const visibleReviewQueue = reviewQueueUserId === userId ? reviewQueue : []
 
   useEffect(() => {
     if (!watchTask || !videoPlaying || watchCompleted) return undefined
@@ -260,6 +274,8 @@ function App() {
       setDepositNetwork('TRC20')
       setAddressCopied(false)
       setDepositAmount(String(selectedPlan.amount))
+      setDepositProofFile(null)
+      if (depositProofInput.current) depositProofInput.current.value = ''
       setDepositBusy(false)
       setDepositNotice('')
       setDepositError('')
@@ -601,6 +617,156 @@ function App() {
     return () => { activeRequest = false }
   }, [session?.user.id, today])
 
+  useEffect(() => {
+    if (!userId) return undefined
+    let activeRequest = true
+    supabase.rpc('is_transaction_reviewer').then(({ data, error }) => {
+      if (!activeRequest) return
+      if (error) {
+        setReviewError(`Could not check review access: ${error.message}`)
+        setTransactionReviewerId(null)
+        setReviewRoleCheckedUserId(userId)
+        return
+      }
+      setTransactionReviewerId(data === true ? userId : null)
+      setReviewRoleCheckedUserId(userId)
+      setReviewError('')
+    }).catch((requestError) => {
+      if (activeRequest) {
+        setTransactionReviewerId(null)
+        setReviewRoleCheckedUserId(userId)
+        setReviewError(requestError instanceof Error ? requestError.message : 'Could not check review access.')
+      }
+    })
+
+    return () => { activeRequest = false }
+  }, [userId])
+
+  const refreshWalletRecords = useCallback(async (isActive = () => true) => {
+    if (!userId) return
+
+    const [ledgerResult, withdrawalResult] = await Promise.all([
+      supabase
+        .from('ledger_entries')
+        .select('entry_type, amount_usd, status, created_at')
+        .eq('user_id', userId)
+        .eq('status', 'confirmed')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('withdrawal_requests')
+        .select('id, amount_usd, status')
+        .eq('user_id', userId)
+        .in('status', ['pending', 'processing']),
+    ])
+    if (!isActive()) return
+    const queryError = ledgerResult.error || withdrawalResult.error
+    if (queryError) throw queryError
+
+    setLedgerEntries(ledgerResult.data ?? [])
+    setWithdrawalRequests(withdrawalResult.data ?? [])
+  }, [userId])
+
+  useEffect(() => {
+    if (!userId) return undefined
+
+    let activeRequest = true
+    const timer = window.setInterval(() => {
+      refreshWalletRecords(() => activeRequest).catch((requestError) => {
+        if (activeRequest) {
+          setAppError(requestError instanceof Error ? requestError.message : 'Could not refresh wallet records.')
+        }
+      })
+    }, 15000)
+
+    return () => {
+      activeRequest = false
+      window.clearInterval(timer)
+    }
+  }, [refreshWalletRecords, userId])
+
+  const loadReviewQueue = useCallback(async () => {
+    if (!canReviewTransactions || !userId) return
+
+    setReviewLoading(true)
+    setReviewError('')
+    setReviewQueue([])
+    setReviewQueueUserId(null)
+    setReviewProofUrls({})
+    try {
+      const { data, error } = await supabase.rpc('get_transaction_review_queue')
+      if (error) throw error
+
+      const rows = data ?? []
+      const proofUrlResults = await Promise.all(rows
+        .filter((request) => request.request_type === 'deposit' && request.proof_path)
+        .map(async (request) => {
+          const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+            .from('deposit-proofs')
+            .createSignedUrl(request.proof_path, 120)
+          if (signedUrlError) throw signedUrlError
+          return [request.id, signedUrlData.signedUrl]
+        }))
+
+      setReviewQueue(rows)
+      setReviewQueueUserId(userId)
+      setReviewProofUrls(Object.fromEntries(proofUrlResults))
+    } catch (requestError) {
+      setReviewQueue([])
+      setReviewQueueUserId(null)
+      setReviewProofUrls({})
+      setReviewError(requestError instanceof Error ? requestError.message : 'Could not load transaction requests.')
+    } finally {
+      setReviewLoading(false)
+    }
+  }, [canReviewTransactions, userId])
+
+  useEffect(() => {
+    if (!canReviewTransactions || active !== 'Review') return undefined
+    let activeRequest = true
+    const timer = window.setTimeout(() => {
+      if (activeRequest) loadReviewQueue()
+    }, 0)
+    return () => {
+      activeRequest = false
+      window.clearTimeout(timer)
+    }
+  }, [active, canReviewTransactions, loadReviewQueue])
+
+  async function reviewTransaction(request, decision) {
+    const action = `${request.request_type}_${decision}`
+    const actionLabels = {
+      deposit_approve: `Approve this $${Number(request.amount_usd).toFixed(2)} deposit and credit the user wallet?`,
+      deposit_reject: 'Reject this deposit request?',
+      withdrawal_approve: `Confirm the $${Number(request.amount_usd).toFixed(2)} withdrawal has already been paid to ${request.destination_address}, then mark it paid and debit the wallet?`,
+      withdrawal_reject: 'Reject this withdrawal request and release its reserved balance?',
+    }
+    if (!window.confirm(actionLabels[action])) return
+
+    setReviewBusyKey(`${request.request_type}:${request.id}`)
+    setReviewError('')
+    setReviewNotice('')
+    try {
+      const { error } = await supabase.rpc(`${decision}_${request.request_type}_request`, {
+        p_request_id: request.id,
+      })
+      if (error) throw error
+
+      setReviewNotice(request.request_type === 'deposit'
+        ? decision === 'approve' ? 'Deposit approved and credited to the user wallet.' : 'Deposit rejected.'
+        : decision === 'approve' ? 'Withdrawal marked paid and debited from the user wallet.' : 'Withdrawal rejected; reserved balance released.')
+      await loadReviewQueue()
+      try {
+        await refreshWalletRecords()
+      } catch (refreshError) {
+        setAppError(`Decision saved, but the wallet could not be refreshed: ${refreshError instanceof Error ? refreshError.message : 'Unknown error.'}`)
+      }
+    } catch (requestError) {
+      setReviewError(requestError instanceof Error ? requestError.message : 'Could not update this request.')
+    } finally {
+      setReviewBusyKey('')
+    }
+  }
+
   async function copyReferralLink() {
     const referralUrl = `${window.location.origin}/${encodeURIComponent(referralCode)}`
     try {
@@ -652,19 +818,42 @@ function App() {
       setDepositError('Enter a deposit amount of at least $5.00.')
       return
     }
+    if (!depositProofFile) {
+      setDepositError('Upload a screenshot of your completed transfer.')
+      return
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(depositProofFile.type)) {
+      setDepositError('Upload a JPG, PNG, or WebP screenshot.')
+      return
+    }
+    if (depositProofFile.size > 5 * 1024 * 1024) {
+      setDepositError('The screenshot must be 5 MB or smaller.')
+      return
+    }
     if (!supabase) {
       setDepositError('Connect Supabase before submitting a deposit request.')
       return
     }
 
     setDepositBusy(true)
+    let uploadedProofPath = ''
     try {
+      const fileExtension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[depositProofFile.type]
+      const proofPath = `${session.user.id}/${crypto.randomUUID()}.${fileExtension}`
+      const { error: uploadError } = await supabase.storage
+        .from('deposit-proofs')
+        .upload(proofPath, depositProofFile, { contentType: depositProofFile.type, upsert: false })
+      if (uploadError) throw uploadError
+      uploadedProofPath = proofPath
+
       const { data: requestId, error } = await supabase.rpc('request_deposit', {
         p_amount_usd: amount,
         p_network: 'TRC20',
         p_provider_reference: null,
+        p_proof_path: proofPath,
       })
       if (error) throw error
+      uploadedProofPath = ''
 
       try {
         await syncTransactionToSheet('deposit_requests', requestId)
@@ -672,8 +861,18 @@ function App() {
         console.error('Deposit spreadsheet sync failed after the request was saved.', syncError)
       }
       setDepositNotice('Deposit request successful. Waiting for approval.')
+      setDepositProofFile(null)
+      if (depositProofInput.current) depositProofInput.current.value = ''
     } catch (requestError) {
-      setDepositError(requestError instanceof Error ? requestError.message : 'Could not submit the deposit request.')
+      let errorMessage = requestError instanceof Error ? requestError.message : 'Could not submit the deposit request.'
+      if (uploadedProofPath) {
+        const { error: cleanupError } = await supabase.storage.from('deposit-proofs').remove([uploadedProofPath])
+        if (cleanupError) {
+          console.error('Could not remove the unlinked deposit proof.', cleanupError)
+          errorMessage = `${errorMessage} Your uploaded screenshot could not be removed; contact support before retrying.`
+        }
+      }
+      setDepositError(errorMessage)
     } finally {
       setDepositBusy(false)
     }
@@ -846,7 +1045,7 @@ function App() {
           <span>reap</span>
         </button>
 
-        <nav className="main-nav" aria-label="Main navigation">
+        <nav className={`main-nav${canReviewTransactions ? ' has-review' : ''}`} aria-label="Main navigation">
           {[
             ['Overview', 'grid'],
             ['Wallet', 'wallet'],
@@ -854,6 +1053,7 @@ function App() {
             ['Activity', 'activity'],
             ['Referrals', 'user'],
             ['Settings', 'settings'],
+            ...(canReviewTransactions ? [['Review', 'activity']] : []),
           ].map(([label, icon]) => (
             <button key={label} className={active === label ? 'nav-item active' : 'nav-item'} onClick={() => setActive(label)}>
               <Icon name={icon} />
@@ -1085,6 +1285,88 @@ function App() {
                   </div>
                 )}
               </section>
+            ) : active === 'Review' && canReviewTransactions ? (
+              <section className="review-page">
+                <div className="review-page-heading">
+                  <div>
+                    <p className="eyebrow">Admin tools</p>
+                    <h2>Transaction requests</h2>
+                    <p>Verify each transfer before approving. Deposits credit the wallet; withdrawals are debited only after payout.</p>
+                  </div>
+                  <button className="secondary-button review-refresh" type="button" onClick={loadReviewQueue} disabled={reviewLoading}>
+                    {reviewLoading ? 'Refreshing…' : 'Refresh'}
+                  </button>
+                </div>
+                {reviewError && <p className="auth-error" role="alert">{reviewError}</p>}
+                {reviewNotice && <p className="auth-notice" role="status">{reviewNotice}</p>}
+                <div className="review-table-wrap">
+                  <table className="review-table">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>User</th>
+                        <th>Amount</th>
+                        <th>Details / proof</th>
+                        <th>Submitted</th>
+                        <th>Decision</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleReviewQueue.map((request) => (
+                        <tr key={`${request.request_type}:${request.id}`}>
+                          <td><span className={`review-type ${request.request_type}`}>{request.request_type}</span></td>
+                          <td>
+                            <strong>{request.display_name || 'User'}</strong>
+                            <span className="review-secondary">{request.user_email}</span>
+                            <span className="review-secondary">ID: {request.user_id}</span>
+                          </td>
+                          <td><strong>${Number(request.amount_usd).toFixed(2)}</strong> {request.asset}</td>
+                          <td>
+                            {request.request_type === 'deposit' ? (
+                              request.proof_path && reviewProofUrls[request.id]
+                                ? <a href={reviewProofUrls[request.id]} target="_blank" rel="noreferrer"><img className="review-proof" src={reviewProofUrls[request.id]} alt="Uploaded deposit proof" /></a>
+                                : <span className="review-secondary">No screenshot uploaded</span>
+                            ) : (
+                              <>
+                                <span>{request.network}</span>
+                                <span className="review-secondary review-wallet-address">{request.destination_address}</span>
+                              </>
+                            )}
+                          </td>
+                          <td>{new Date(request.created_at).toLocaleString()}</td>
+                          <td>
+                            <div className="review-actions">
+                              <button
+                                type="button"
+                                className="review-approve"
+                                onClick={() => reviewTransaction(request, 'approve')}
+                                disabled={reviewLoading || reviewBusyKey === `${request.request_type}:${request.id}` || (request.request_type === 'deposit' && !request.proof_path)}
+                              >
+                                {reviewBusyKey === `${request.request_type}:${request.id}` ? 'Working…' : request.request_type === 'withdrawal' ? 'Approve & mark paid' : 'Approve & credit'}
+                              </button>
+                              <button
+                                type="button"
+                                className="review-reject"
+                                onClick={() => reviewTransaction(request, 'reject')}
+                                disabled={reviewLoading || reviewBusyKey === `${request.request_type}:${request.id}`}
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {!reviewLoading && visibleReviewQueue.length === 0 && (
+                        <tr><td className="review-empty" colSpan="6">There are no pending deposit or withdrawal requests.</td></tr>
+                      )}
+                      {reviewLoading && visibleReviewQueue.length === 0 && (
+                        <tr><td className="review-empty" colSpan="6">Loading transaction requests…</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="review-footnote">For withdrawals, send the USDT payout manually before clicking “Approve &amp; mark paid.” Rejection releases the reserved amount. Decisions are recorded in the ledger once.</p>
+              </section>
             ) : (
               <div className="empty-state">
                 <div className="empty-icon"><Icon name={active === 'Wallet' ? 'wallet' : active === 'Activity' ? 'activity' : 'package'} size={28} /></div>
@@ -1160,6 +1442,16 @@ function App() {
                     </button>
                     <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send other tokens.</p>
                   </div>
+                  <label>Transfer screenshot
+                    <input
+                      ref={depositProofInput}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={(event) => setDepositProofFile(event.target.files?.[0] ?? null)}
+                      required
+                    />
+                    <span className="file-hint">JPG, PNG, or WebP; maximum 5 MB.</span>
+                  </label>
                   <p className="preview-modal-note">After you submit the request, its status will be waiting for approval.</p>
                   {depositError && <p className="auth-error" role="alert">{depositError}</p>}
                   {depositNotice && <p className="auth-notice" role="status">{depositNotice}</p>}
