@@ -1166,7 +1166,7 @@ function App() {
                     <button className="secondary-button wide" type="button" onClick={copyDepositAddress}>
                       {addressCopied ? 'Address copied' : 'Copy deposit address'}
                     </button>
-                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send other tokens. After sending, enter the transaction ID below. Deposits remain pending until manually verified and are not automatically credited.</p>
+                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send other tokens. After sending, enter the transaction ID below.</p>
                   </div>
                   <label>TRON transaction ID
                     <input
