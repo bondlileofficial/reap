@@ -182,7 +182,6 @@ function App() {
   const [depositNetwork, setDepositNetwork] = useState('TRC20')
   const [addressCopied, setAddressCopied] = useState(false)
   const [depositAmount, setDepositAmount] = useState(String(plans[2].amount))
-  const [depositTransactionId, setDepositTransactionId] = useState('')
   const [depositBusy, setDepositBusy] = useState(false)
   const [depositNotice, setDepositNotice] = useState('')
   const [depositError, setDepositError] = useState('')
@@ -261,7 +260,6 @@ function App() {
       setDepositNetwork('TRC20')
       setAddressCopied(false)
       setDepositAmount(String(selectedPlan.amount))
-      setDepositTransactionId('')
       setDepositBusy(false)
       setDepositNotice('')
       setDepositError('')
@@ -650,13 +648,8 @@ function App() {
     setDepositNotice('')
 
     const amount = Number(depositAmount)
-    const transactionId = depositTransactionId.trim()
     if (!Number.isFinite(amount) || amount < 5) {
       setDepositError('Enter a deposit amount of at least $5.00.')
-      return
-    }
-    if (!/^[a-fA-F0-9]{64}$/.test(transactionId)) {
-      setDepositError('Enter the 64-character transaction ID from the TRON (TRC20) transfer.')
       return
     }
     if (!supabase) {
@@ -669,17 +662,16 @@ function App() {
       const { data: requestId, error } = await supabase.rpc('request_deposit', {
         p_amount_usd: amount,
         p_network: 'TRC20',
-        p_provider_reference: transactionId,
+        p_provider_reference: null,
       })
       if (error) throw error
 
       try {
         await syncTransactionToSheet('deposit_requests', requestId)
-        setDepositNotice('Deposit request saved and sent for manual verification.')
+        setDepositNotice('Deposit request submitted. Waiting for approval.')
       } catch (syncError) {
         setDepositNotice(`Deposit request was saved, but spreadsheet sync failed: ${syncError instanceof Error ? syncError.message : 'Unknown sync error'}`)
       }
-      setDepositTransactionId('')
     } catch (requestError) {
       setDepositError(requestError instanceof Error ? requestError.message : 'Could not submit the deposit request.')
     } finally {
@@ -1166,20 +1158,9 @@ function App() {
                     <button className="secondary-button wide" type="button" onClick={copyDepositAddress}>
                       {addressCopied ? 'Address copied' : 'Copy deposit address'}
                     </button>
-                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send other tokens. After sending, enter the transaction ID below.</p>
+                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send other tokens.</p>
                   </div>
-                  <label>TRON transaction ID
-                    <input
-                      type="text"
-                      autoComplete="off"
-                      minLength="64"
-                      maxLength="64"
-                      pattern="[A-Fa-f0-9]{64}"
-                      value={depositTransactionId}
-                      onChange={(event) => setDepositTransactionId(event.target.value)}
-                      required
-                    />
-                  </label>
+                  <p className="preview-modal-note">After you submit the request, its status will be waiting for approval.</p>
                   {depositError && <p className="auth-error" role="alert">{depositError}</p>}
                   {depositNotice && <p className="auth-notice" role="status">{depositNotice}</p>}
                   <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || depositBusy}>
