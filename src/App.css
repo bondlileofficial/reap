@@ -627,6 +627,30 @@
   line-height: 1.5;
 }
 
+.deposit-address {
+  margin-top: 16px;
+}
+
+.deposit-address > span {
+  display: block;
+  margin-bottom: 7px;
+  color: #676d64;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.deposit-address code {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbfcf9;
+  color: var(--ink);
+  font-size: 13px;
+  user-select: all;
+}
+
 .modal .primary-button:disabled {
   cursor: not-allowed;
   opacity: .55;

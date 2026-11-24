@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import './App.css'
 
+const tronDepositAddress = 'TL2Lv1QKRgswFNLJ9km6HzHMr8WaSsH3ij'
+
 const plans = [
   { amount: 5, daily: 0.85, tasks: 3, accent: '#d9efaf' },
   { amount: 10, daily: 1, tasks: 4, accent: '#ffd7a5' },
@@ -118,6 +120,9 @@ const Icon = ({ name, size = 20 }) => {
 function App() {
   const [active, setActive] = useState('Overview')
   const [modal, setModal] = useState(null)
+  const [depositNetwork, setDepositNetwork] = useState('TRC20')
+  const [addressCopied, setAddressCopied] = useState(false)
+  const [depositError, setDepositError] = useState('')
   const [dbPlans, setDbPlans] = useState(plans)
   const [selectedPlan, setSelectedPlan] = useState(plans[2])
   const [tasks, setTasks] = useState([])
@@ -137,7 +142,14 @@ function App() {
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
 
-  const openModal = (type) => setModal(type)
+  const openModal = (type) => {
+    if (type === 'deposit') {
+      setDepositNetwork('TRC20')
+      setAddressCopied(false)
+      setDepositError('')
+    }
+    setModal(type)
+  }
 
   async function handleSignOut() {
     try {
@@ -295,6 +307,17 @@ function App() {
       window.setTimeout(() => setReferralCopied(false), 2000)
     } catch (copyError) {
       setReferralError(copyError instanceof Error ? copyError.message : 'Could not copy the referral link.')
+    }
+  }
+
+  async function copyDepositAddress() {
+    try {
+      await navigator.clipboard.writeText(tronDepositAddress)
+      setAddressCopied(true)
+      setDepositError('')
+      window.setTimeout(() => setAddressCopied(false), 2000)
+    } catch (copyError) {
+      setDepositError(copyError instanceof Error ? copyError.message : 'Could not copy the deposit address.')
     }
   }
 
@@ -514,7 +537,7 @@ function App() {
                 <p className="eyebrow">Selected package</p>
                 <h2 id="modal-title">${selectedPlan.amount} package</h2>
                 <div className="modal-summary"><span>{selectedPlan.tasks} daily tasks</span><span>${selectedPlan.daily} daily earnings</span><span>365 day term</span></div>
-                <button className="primary-button wide" onClick={() => setModal('deposit')}>Continue to deposit</button>
+                <button className="primary-button wide" onClick={() => openModal('deposit')}>Continue to deposit</button>
               </>
             ) : (
               <>
@@ -525,13 +548,29 @@ function App() {
                   <select defaultValue="USDT"><option value="USDT">USDT</option></select>
                 </label>
                 <label>Network
-                  <select defaultValue="TRC20">
-                    <option value="TRC20">TRC20</option>
+                  <select value={depositNetwork} onChange={(event) => { setDepositNetwork(event.target.value); setAddressCopied(false); setDepositError('') }}>
+                    <option value="TRC20">TRON (TRC20)</option>
                     <option value="BEP20">BNB (BEP20)</option>
                   </select>
                 </label>
-                {!isSupabaseConfigured && <p className="preview-modal-note">Connect Supabase to enable account features. Crypto payments are not configured, so no funds will be accepted.</p>}
-                <button className="primary-button wide" onClick={() => setModal(null)} disabled={!isSupabaseConfigured}>{modal === 'deposit' ? 'Generate payment address' : 'Continue'}</button>
+                {modal === 'deposit' && depositNetwork === 'TRC20' && (
+                  <div className="deposit-address">
+                    <span>USDT deposit address (TRC20)</span>
+                    <code>{tronDepositAddress}</code>
+                    <button className="secondary-button wide" type="button" onClick={copyDepositAddress}>
+                      {addressCopied ? 'Address copied' : 'Copy deposit address'}
+                    </button>
+                    <p className="preview-modal-note">Send USDT on TRON (TRC20) only. Do not send BEP20 or other tokens to this address. Transfers are not automatically detected or credited; verify the address and network before sending.</p>
+                  </div>
+                )}
+                {modal === 'deposit' && depositNetwork === 'BEP20' && (
+                  <p className="preview-modal-note">Deposits on BNB (BEP20) are not supported. Select TRON (TRC20) to view the deposit address.</p>
+                )}
+                {modal === 'withdraw' && <p className="preview-modal-note">Withdrawals are not connected to a payment provider.</p>}
+                {depositError && <p className="auth-error" role="alert">{depositError}</p>}
+                {modal === 'withdraw' && (
+                  <button className="primary-button wide" onClick={() => setModal(null)} disabled={!isSupabaseConfigured}>Continue</button>
+                )}
               </>
             )}
           </section>
