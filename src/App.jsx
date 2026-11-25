@@ -17,6 +17,22 @@ function getUtcDateKey(date = new Date()) {
   return date.toISOString().slice(0, 10)
 }
 
+function getKampalaTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Kampala',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+  const getPart = (type) => parts.find((part) => part.type === type)?.value
+  return {
+    weekday: getPart('weekday'),
+    hour: Number(getPart('hour')),
+    minute: Number(getPart('minute')),
+  }
+}
+
 function formatUtcDate(dateKey) {
   return new Intl.DateTimeFormat(undefined, {
     weekday: 'long',
@@ -170,6 +186,7 @@ const Icon = ({ name, size = 20 }) => {
 function App() {
   const [active, setActive] = useState('Overview')
   const [today, setToday] = useState(getUtcDateKey)
+  const [scheduleNow, setScheduleNow] = useState(() => new Date())
   const [modal, setModal] = useState(null)
   const [watchTask, setWatchTask] = useState(null)
   const [watchedSeconds, setWatchedSeconds] = useState(0)
@@ -207,6 +224,13 @@ function App() {
   const [databaseAvailableBalance, setDatabaseAvailableBalance] = useState(null)
   const [packages, setPackages] = useState([])
   const [taskCompletions, setTaskCompletions] = useState([])
+  const [taskProgress, setTaskProgress] = useState({
+    cycle_id: null,
+    resets_at: null,
+    task_limit: 0,
+    completed_count: 0,
+  })
+  const [taskClockNow, setTaskClockNow] = useState(0)
   const [profile, setProfile] = useState(null)
   const [profileName, setProfileName] = useState('')
   const [profilePhone, setProfilePhone] = useState('')
@@ -233,6 +257,9 @@ function App() {
   const [referralUserId, setReferralUserId] = useState(null)
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
+  const siteTime = getKampalaTimeParts(scheduleNow)
+  const isTaskWeekday = !['Sat', 'Sun'].includes(siteTime.weekday)
+  const isWithdrawalWindowOpen = siteTime.hour >= 9 && siteTime.hour < 16
   const userId = session?.user.id
   const canReviewTransactions = Boolean(userId && reviewRoleCheckedUserId === userId && transactionReviewerId === userId)
   const visibleReviewQueue = reviewQueueUserId === userId ? reviewQueue : []
@@ -250,6 +277,7 @@ function App() {
 
   useEffect(() => {
     let timer
+    const initialTimer = window.setTimeout(updateToday, 0)
 
     function updateToday() {
       if (timer) window.clearTimeout(timer)
@@ -268,12 +296,17 @@ function App() {
       if (document.visibilityState === 'visible') updateToday()
     }
 
-    updateToday()
     document.addEventListener('visibilitychange', updateWhenVisible)
     return () => {
+      window.clearTimeout(initialTimer)
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', updateWhenVisible)
     }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setScheduleNow(new Date()), 30_000)
+    return () => window.clearInterval(timer)
   }, [])
 
   const openModal = (type) => {
@@ -600,16 +633,32 @@ function App() {
       }
 
       try {
-        const [profileResult, ledgerResult, packagesResult, completionsResult, withdrawalRequestsResult, walletBalanceResult, depositRequestsResult] = await Promise.all([
+        const [profileResult, ledgerResult, packagesResult, taskProgressResult, withdrawalRequestsResult, walletBalanceResult, depositRequestsResult] = await Promise.all([
           supabase.from('profiles').select('id, display_name, phone_number, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
-          supabase.from('task_completions').select('id, task_id, status, completed_on').eq('user_id', session.user.id).eq('completed_on', today),
+          supabase.rpc('get_my_task_progress'),
           supabase.from('withdrawal_requests').select('id, amount_usd, status').eq('user_id', session.user.id).in('status', ['pending', 'processing']),
           supabase.rpc('get_my_available_wallet_balance'),
           supabase.from('deposit_requests').select('id, amount_usd, status, created_at').eq('user_id', session.user.id).order('created_at', { ascending: false }),
         ])
 
+        if (!activeRequest) return
+        let progressRow = null
+        let completionsResult = { data: [], error: null }
+        if (!taskProgressResult.error) {
+          progressRow = Array.isArray(taskProgressResult.data)
+            ? taskProgressResult.data[0]
+            : taskProgressResult.data
+          if (progressRow?.cycle_id) {
+            completionsResult = await supabase
+              .from('task_completions')
+              .select('id, task_id, task_slot, status, completed_on, started_at, completed_at')
+              .eq('user_id', session.user.id)
+              .eq('task_cycle_id', progressRow.cycle_id)
+              .order('task_slot', { ascending: true })
+          }
+        }
         if (!activeRequest) return
 
           if (!profileResult.error) {
@@ -624,6 +673,14 @@ function App() {
           setDatabaseAvailableBalance(null)
         }
         if (!packagesResult.error) setPackages(packagesResult.data ?? [])
+        if (!taskProgressResult.error) {
+          setTaskProgress({
+            cycle_id: progressRow?.cycle_id ?? null,
+            resets_at: progressRow?.resets_at ?? null,
+            task_limit: Number(progressRow?.task_limit ?? 0),
+            completed_count: Number(progressRow?.completed_count ?? 0),
+          })
+        }
         if (!completionsResult.error) setTaskCompletions(completionsResult.data ?? [])
         if (!withdrawalRequestsResult.error) setWithdrawalRequests(withdrawalRequestsResult.data ?? [])
         if (!depositRequestsResult.error) setDepositRequests(depositRequestsResult.data ?? [])
@@ -632,6 +689,7 @@ function App() {
           profileResult.error,
           ledgerResult.error,
           packagesResult.error,
+          taskProgressResult.error,
           completionsResult.error,
           withdrawalRequestsResult.error,
           walletBalanceResult.error,
@@ -715,6 +773,37 @@ function App() {
     return Number(walletBalanceResult.data)
   }, [userId])
 
+  const refreshTaskProgress = useCallback(async (isActive = () => true) => {
+    if (!userId) return
+
+    const { data, error } = await supabase.rpc('get_my_task_progress')
+    if (error) throw error
+
+    const progressRow = Array.isArray(data) ? data[0] : data
+    let completions = []
+    if (progressRow?.cycle_id) {
+      const { data: completionData, error: completionError } = await supabase
+        .from('task_completions')
+        .select('id, task_id, task_slot, status, completed_on, started_at, completed_at')
+        .eq('user_id', userId)
+        .eq('task_cycle_id', progressRow.cycle_id)
+        .order('task_slot', { ascending: true })
+      if (completionError) throw completionError
+      completions = completionData ?? []
+    }
+
+    if (!isActive()) return
+    const nextProgress = {
+      cycle_id: progressRow?.cycle_id ?? null,
+      resets_at: progressRow?.resets_at ?? null,
+      task_limit: Number(progressRow?.task_limit ?? 0),
+      completed_count: Number(progressRow?.completed_count ?? 0),
+    }
+    setTaskProgress(nextProgress)
+    setTaskCompletions(completions)
+    return nextProgress
+  }, [userId])
+
   useEffect(() => {
     if (!userId) return undefined
 
@@ -725,13 +814,39 @@ function App() {
           setAppError(requestError instanceof Error ? requestError.message : 'Could not refresh wallet records.')
         }
       })
+      refreshTaskProgress(() => activeRequest).catch((requestError) => {
+        if (activeRequest) {
+          setAppError(requestError instanceof Error ? requestError.message : 'Could not refresh task progress.')
+        }
+      })
     }, 15000)
 
     return () => {
       activeRequest = false
       window.clearInterval(timer)
     }
-  }, [refreshWalletRecords, userId])
+  }, [refreshTaskProgress, refreshWalletRecords, userId])
+
+  useEffect(() => {
+    if (!taskProgress.resets_at) return undefined
+
+    const timer = window.setInterval(() => setTaskClockNow(Date.now()), 1000)
+    const initialTick = window.setTimeout(() => setTaskClockNow(Date.now()), 0)
+    return () => {
+      window.clearInterval(timer)
+      window.clearTimeout(initialTick)
+    }
+  }, [taskProgress.resets_at])
+
+  useEffect(() => {
+    if (!taskProgress.resets_at || new Date(taskProgress.resets_at).getTime() > taskClockNow || !userId) return
+    const timer = window.setTimeout(() => {
+      refreshTaskProgress().catch((requestError) => {
+        setAppError(requestError instanceof Error ? requestError.message : 'Could not renew your task cycle.')
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [refreshTaskProgress, taskClockNow, taskProgress.resets_at, userId])
 
   const loadReviewQueue = useCallback(async () => {
     if (!canReviewTransactions || !userId) return
@@ -931,6 +1046,10 @@ function App() {
     event.preventDefault()
     setWithdrawalError('')
     setWithdrawalNotice('')
+    if (!isWithdrawalWindowOpen) {
+      setWithdrawalError('Withdrawals can only be submitted from 9:00 AM to 4:00 PM Africa/Kampala time.')
+      return
+    }
 
     const amount = Number(withdrawalAmount)
     if (!Number.isFinite(amount) || amount < 5) {
@@ -1047,7 +1166,7 @@ function App() {
       .filter((entry) => entry.entry_type === 'task_reward')
       .map((entry, index) => ({
         id: `video-earning:${entry.created_at}:${index}`,
-        type: 'Video earnings',
+        type: 'Task reward',
         amount: Number(entry.amount_usd),
         status: 'Earned',
         createdAt: entry.created_at,
@@ -1063,15 +1182,42 @@ function App() {
   const availableDailyReward = earningPackages
     .reduce((total, item) => total + Number(item.plans?.daily_reward_usd ?? 0), 0)
   const taskReward = availableTaskLimit ? availableDailyReward / availableTaskLimit : 0
+  const taskCooldownSeconds = taskProgress.resets_at && taskClockNow
+    ? Math.max(0, Math.ceil((new Date(taskProgress.resets_at).getTime() - taskClockNow) / 1000))
+    : 0
+  const taskCooldownLabel = taskClockNow
+    ? `${String(Math.floor(taskCooldownSeconds / 3600)).padStart(2, '0')}:${String(Math.floor((taskCooldownSeconds % 3600) / 60)).padStart(2, '0')}:${String(taskCooldownSeconds % 60).padStart(2, '0')}`
+    : '--:--:--'
+  const taskSlots = tasks.length && availableTaskLimit > 0
+    ? Array.from({ length: availableTaskLimit }, (_, index) => ({
+        ...tasks[index % tasks.length],
+        task_slot: index + 1,
+        title: `${tasks[index % tasks.length].title} (Task ${index + 1})`,
+      }))
+    : []
 
   async function startVideoTask(task) {
     if (!supabase || !session?.user.id) return
     setWatchError('')
     setWatchBusy(true)
     try {
-      const { error } = await supabase.rpc('begin_video_task', { p_task_id: task.id })
+      const { error } = await supabase.rpc('begin_video_task', {
+        p_task_id: task.id,
+        p_task_slot: task.task_slot,
+      })
       if (error) throw error
 
+      setTaskCompletions((current) => current.some((completion) => completion.task_slot === task.task_slot)
+        ? current
+        : [...current, {
+            id: `pending:${task.task_slot}`,
+            task_id: task.id,
+            task_slot: task.task_slot,
+            status: 'pending',
+          }])
+      refreshTaskProgress().catch((requestError) => {
+        setAppError(requestError instanceof Error ? requestError.message : 'Task started, but progress could not refresh.')
+      })
       taskCompletionInProgress.current = false
       setWatchTask(task)
       setWatchedSeconds(0)
@@ -1091,13 +1237,22 @@ function App() {
     setWatchBusy(true)
     setWatchError('')
     try {
-      const { data, error } = await supabase.rpc('complete_video_task', { p_task_id: task.id })
+      const { data, error } = await supabase.rpc('complete_video_task', {
+        p_task_id: task.id,
+        p_task_slot: task.task_slot,
+      })
       if (error) throw error
 
       const reward = Number(data.reward_usd)
       setTaskCompletions((current) => [
-        ...current.filter((completion) => completion.task_id !== task.id),
-        { id: data.completion_id, task_id: task.id, status: 'approved', completed_on: today },
+        ...current.filter((completion) => completion.task_slot !== task.task_slot),
+        {
+          id: data.completion_id,
+          task_id: task.id,
+          task_slot: task.task_slot,
+          status: 'approved',
+          completed_on: today,
+        },
       ])
       setLedgerEntries((current) => [
         {
@@ -1108,6 +1263,11 @@ function App() {
         },
         ...current,
       ])
+      try {
+        await refreshTaskProgress()
+      } catch (progressError) {
+        setAppError(`Task reward saved, but progress could not refresh: ${progressError instanceof Error ? progressError.message : 'Unknown error.'}`)
+      }
       setWatchCompleted(true)
       setVideoPlaying(false)
       if (videoElement.current) videoElement.current.pause()
@@ -1117,7 +1277,7 @@ function App() {
     } finally {
       setWatchBusy(false)
     }
-  }, [today, watchedSeconds])
+  }, [refreshTaskProgress, today, watchedSeconds])
 
   useEffect(() => {
     if (watchedSeconds >= 30 && watchTask && !watchCompleted) {
@@ -1134,6 +1294,40 @@ function App() {
     setWatchCompleted(false)
     setWatchError('')
     setModal(null)
+  }
+
+  function renderTaskCard(task, index) {
+    const completion = taskCompletions.find((item) => item.task_slot === task.task_slot)
+    const completed = completion?.status === 'approved'
+    const inProgress = completion?.status === 'pending'
+    const coolingDown = taskCooldownSeconds > 0
+    const disabled = watchBusy
+      || !session?.user.id
+      || availableTaskLimit === 0
+      || !isTaskWeekday
+      || completed
+      || coolingDown
+      || (!inProgress && approvedToday >= availableTaskLimit)
+
+    return (
+      <article className={completed ? 'task-card completed' : 'task-card'} key={task.task_slot}>
+        <div className="task-icon">{String(index + 1).padStart(2, '0')}</div>
+        <div className="task-info">
+          <h3>{task.title}</h3>
+          <p>{completed ? 'Reward added to your balance' : task.video_url ? 'Watch for 30 seconds' : 'Task details'}</p>
+        </div>
+        <div className="task-reward">
+          <strong>{availableTaskLimit ? `$${taskReward.toFixed(2)}` : '—'}</strong>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => startVideoTask(task)}
+          >
+            {completed ? 'Completed' : !isTaskWeekday ? 'Weekdays only' : coolingDown ? `Available in ${taskCooldownLabel}` : inProgress ? 'Continue' : !session?.user.id ? 'Sign in' : availableTaskLimit === 0 ? 'Package required' : approvedToday >= availableTaskLimit ? 'Daily limit' : watchBusy ? 'Loading…' : 'Watch video'}
+          </button>
+        </div>
+      </article>
+    )
   }
 
   if (isSupabaseConfigured && authLoading) {
@@ -1155,6 +1349,7 @@ function App() {
         <nav className={`main-nav${canReviewTransactions ? ' has-review' : ''}`} aria-label="Main navigation">
           {[
             ['Overview', 'grid'],
+            ['Tasks', 'activity'],
             ['Wallet', 'wallet'],
             ['Packages', 'package'],
             ['Activity', 'activity'],
@@ -1221,39 +1416,12 @@ function App() {
 
             <section className="section-heading">
               <div><p className="eyebrow">Today</p><h2>Task list</h2></div>
-              <button className="text-button" onClick={() => setActive('Activity')}>View activity <Icon name="arrow" size={16} /></button>
+              <button className="text-button" onClick={() => setActive('Tasks')}>View all tasks <Icon name="arrow" size={16} /></button>
             </section>
 
             <section className="task-grid">
-              {tasks.length
-                ? tasks.slice(0, 5).map((task, index) => {
-                    const completion = taskCompletions.find((item) => item.task_id === task.id)
-                    const completed = completion?.status === 'approved'
-                    const inProgress = completion?.status === 'pending'
-                    const disabled = watchBusy
-                      || !session?.user.id
-                      || availableTaskLimit === 0
-                      || completed
-                      || (!inProgress && approvedToday >= availableTaskLimit)
-                    return (
-                    <article className={completed ? 'task-card completed' : 'task-card'} key={task.id}>
-                      <div className="task-icon">{String(index + 1).padStart(2, '0')}</div>
-                      <div className="task-info">
-                        <h3>{task.title}</h3>
-                        <p>{completed ? 'Reward added to your balance' : task.video_url ? 'Watch for 30 seconds' : 'Task details'}</p>
-                      </div>
-                      <div className="task-reward">
-                        <strong>{availableTaskLimit ? `$${taskReward.toFixed(2)}` : '—'}</strong>
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => startVideoTask(task)}
-                        >
-                          {completed ? 'Completed' : inProgress ? 'Continue' : !session?.user.id ? 'Sign in' : availableTaskLimit === 0 ? 'Package required' : approvedToday >= availableTaskLimit ? 'Daily limit' : watchBusy ? 'Loading…' : 'Watch video'}
-                        </button>
-                      </div>
-                    </article>
-                  )})
+              {taskSlots.length
+                ? taskSlots.slice(0, 5).map(renderTaskCard)
                 : [0, 1, 2, 3, 4].map((task) => (
                     <article className="task-card" key={task}>
                       <div className="task-icon">{String(task + 1).padStart(2, '0')}</div>
@@ -1268,6 +1436,12 @@ function App() {
                     </article>
                   ))}
             </section>
+            {taskCooldownSeconds > 0 && (
+              <p className="task-cooldown" role="status">All tasks complete. New tasks unlock in <strong>{taskCooldownLabel}</strong>.</p>
+            )}
+            {!isTaskWeekday && (
+              <p className="task-cooldown" role="status">Video tasks are available Monday through Friday (Africa/Kampala time).</p>
+            )}
 
             <section className="section-heading package-heading">
               <div><p className="eyebrow">Increase your earnings</p><h2>Packages</h2></div>
@@ -1293,7 +1467,74 @@ function App() {
 
         {active !== 'Overview' && (
           <section className="placeholder-panel">
-            {active === 'Packages' ? (
+            {active === 'Tasks' ? (
+              <section className="tasks-page">
+                <div className="review-page-heading">
+                  <div>
+                    <p className="eyebrow">Paid activity</p>
+                    <h2>Video tasks</h2>
+                    <p>
+                      {availableTaskLimit
+                        ? `${availableTaskLimit} task slots from your active packages. Each task earns $${taskReward.toFixed(2)} after watching for 30 seconds.`
+                        : 'Purchase an active package to unlock video tasks.'}
+                    </p>
+                  </div>
+                </div>
+                {!isTaskWeekday && (
+                  <p className="task-cooldown" role="status">Video tasks are available Monday through Friday (Africa/Kampala time).</p>
+                )}
+                {taskCooldownSeconds > 0 && (
+                  <p className="task-cooldown" role="status">You completed all tasks. They renew in <strong>{taskCooldownLabel}</strong>.</p>
+                )}
+                <div className="task-grid">
+                  {taskSlots.length
+                    ? taskSlots.map(renderTaskCard)
+                    : <p className="review-empty">{dataLoading ? 'Loading your tasks…' : tasks.length ? 'An active package is required to show tasks.' : 'No video tasks are available right now.'}</p>}
+                </div>
+              </section>
+            ) : active === 'Activity' ? (
+              <section className="wallet-history">
+                <div className="review-page-heading">
+                  <div>
+                    <p className="eyebrow">Your account</p>
+                    <h2>Recent activity</h2>
+                    <p>Deposits and rewards from completed video tasks.</p>
+                  </div>
+                  <button
+                    className="secondary-button review-refresh"
+                    type="button"
+                    onClick={() => refreshWalletRecords().catch((requestError) => {
+                      setAppError(requestError instanceof Error ? requestError.message : 'Could not refresh activity.')
+                    })}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <div className="review-table-wrap">
+                  <table className="review-table wallet-table">
+                    <thead>
+                      <tr><th>Activity</th><th>Amount</th><th>Status</th><th>Date</th></tr>
+                    </thead>
+                    <tbody>
+                      {walletActivity.map((item) => (
+                        <tr key={item.id}>
+                          <td>{item.type}</td>
+                          <td><strong>${item.amount.toFixed(2)}</strong></td>
+                          <td><span className={`wallet-status ${item.status.toLowerCase()}`}>{item.status}</span></td>
+                          <td>{new Date(item.createdAt).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                      {!dataLoading && walletActivity.length === 0 && (
+                        <tr><td className="review-empty" colSpan="4">No deposits or task rewards yet.</td></tr>
+                      )}
+                      {dataLoading && walletActivity.length === 0 && (
+                        <tr><td className="review-empty" colSpan="4">Loading activity…</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : active === 'Packages' ? (
               <div className="full-package-grid">
                 {dbPlans.map((plan) => (
                   <article className="package-card" style={{ '--plan-accent': plan.accent }} key={plan.amount}>
@@ -1541,7 +1782,7 @@ function App() {
               <>
                 <p className="eyebrow">Video task</p>
                 <h2 id="modal-title">{watchTask?.title}</h2>
-                <p className="preview-modal-note">This reward is allocated from the daily reward configured for your active package; the video itself does not generate revenue.</p>
+                <p className="preview-modal-note">Watch this video for at least 30 seconds to complete the task.</p>
                 <video
                   ref={videoElement}
                   className="task-video-player"
@@ -1638,6 +1879,7 @@ function App() {
               <>
                 <p className="eyebrow">Cash out</p>
                 <h2 id="modal-title">Withdraw USDT</h2>
+                <p className="preview-modal-note">Withdrawals can be submitted from 9:00 AM to 4:00 PM Africa/Kampala time.</p>
                 {dataLoading ? (
                   <p className="preview-modal-note">Loading your available balance…</p>
                 ) : isSupabaseConfigured && databaseAvailableBalance === null ? (
@@ -1698,8 +1940,8 @@ function App() {
                     <p className="preview-modal-note">Minimum $5.00. The 5% fee is deducted from the requested amount. Requests are subject to review; payout is not automatic. Check the network and address carefully.</p>
                     {withdrawalError && <p className="auth-error" role="alert">{withdrawalError}</p>}
                     {withdrawalNotice && <p className="auth-notice" role="status">{withdrawalNotice}</p>}
-                    <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || withdrawalBusy || withdrawalBalanceLoading || Number(withdrawalAmount) < 5 || Number(withdrawalAmount) > availableBalance}>
-                      {withdrawalBusy ? 'Submitting…' : 'Submit withdrawal request'}
+                    <button className="primary-button wide" type="submit" disabled={!isSupabaseConfigured || withdrawalBusy || withdrawalBalanceLoading || !isWithdrawalWindowOpen || Number(withdrawalAmount) < 5 || Number(withdrawalAmount) > availableBalance}>
+                      {withdrawalBusy ? 'Submitting…' : isWithdrawalWindowOpen ? 'Submit withdrawal request' : 'Available 9:00 AM–4:00 PM EAT'}
                     </button>
                   </form>
                 )}
