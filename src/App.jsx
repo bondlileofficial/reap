@@ -8,9 +8,9 @@ const siteClosedAtKey = 'reap.site-closed-at'
 const maximumSessionAgeMs = 5 * 60 * 1000
 const closedSiteGraceMs = 10 * 1000
 const localTaskVideoUrls = [
-  '/task%20videos/12248500_1920_1080_30fps.mp4',
-  '/task%20videos/13649040_1920_1080_30fps.mp4',
-  '/task%20videos/15257423_1920_1080_60fps.mp4',
+  '/task%20videos/Blue%20Sky%20Sunset%20Quote%20Video%20.mp4',
+  '/task%20videos/Brown%20and%20White%20Simple%20Nature%20Video.mp4',
+  '/task%20videos/Orange%20and%20Black%20Illustrated%20Sunset%20Movie%20Credit%20Title%20Video.mp4',
 ]
 
 function getUtcDateKey(date = new Date()) {
