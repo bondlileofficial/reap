@@ -62,6 +62,7 @@ function AuthScreen({ message }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [passwordVisible, setPasswordVisible] = useState(false)
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -148,12 +149,18 @@ function AuthScreen({ message }) {
             </label>
           )}
           <label>Email<input name="email" type="email" autoComplete="email" required /></label>
-          <label>Password<input name="password" type="password" autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'} minLength="8" required /></label>
+          <label htmlFor="auth-password">Password</label>
+          <div className="password-field">
+            <input id="auth-password" name="password" type={passwordVisible ? 'text' : 'password'} autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'} minLength="8" required />
+            <button type="button" className="password-visibility" onClick={() => setPasswordVisible(!passwordVisible)} aria-label={passwordVisible ? 'Hide password' : 'Show password'} aria-pressed={passwordVisible}>
+              <Icon name={passwordVisible ? 'eyeOff' : 'eye'} />
+            </button>
+          </div>
           <button className="primary-button wide" type="submit" disabled={busy}>
             {busy ? 'Please wait…' : mode === 'sign-in' ? 'Sign in' : 'Create account'}
           </button>
         </form>
-        <button className="auth-switch" onClick={() => { setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in'); setError(''); setNotice('') }}>
+        <button className="auth-switch" onClick={() => { setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in'); setPasswordVisible(false); setError(''); setNotice('') }}>
           {mode === 'sign-in' ? 'New to Reap? Create an account' : 'Already registered? Sign in'}
         </button>
       </section>
@@ -175,6 +182,8 @@ const Icon = ({ name, size = 20 }) => {
     down: <><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></>,
     up: <><path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/></>,
     copy: <><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></>,
+    eye: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></>,
+    eyeOff: <><path d="m3 3 18 18"/><path d="M10.6 6.1A11.4 11.4 0 0 1 12 6c6.5 0 10 6 10 6a15 15 0 0 1-3.1 3.7M6.3 6.3A15 15 0 0 0 2 12s3.5 6 10 6c1.3 0 2.5-.2 3.6-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
