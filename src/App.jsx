@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { isSupabaseConfigured, supabase } from './lib/supabase'
+import {
+  isPasswordResetInProgress,
+  isSupabaseConfigured,
+  setPasswordResetInProgress,
+  supabase,
+} from './lib/supabase'
 import { getReferralCodeFromUrl, getReferralUrl } from './lib/referral'
 import './App.css'
 
@@ -59,10 +64,94 @@ const plans = [
 function AuthScreen({ message }) {
   const [referralCode, setReferralCode] = useState(() => getReferralCodeFromUrl(window.location.href))
   const [mode, setMode] = useState(() => referralCode ? 'sign-up' : 'sign-in')
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetCodeSent, setResetCodeSent] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [passwordVisible, setPasswordVisible] = useState(false)
+
+  function openMode(nextMode) {
+    setMode(nextMode)
+    setError('')
+    setNotice('')
+    setPasswordVisible(false)
+    setResetCodeSent(false)
+  }
+
+  async function handlePasswordReset(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    setBusy(true)
+
+    const formData = new FormData(event.currentTarget)
+    const email = String(formData.get('email') || '').trim()
+
+    if (!resetCodeSent) {
+      try {
+        const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        })
+        if (resetError) throw resetError
+        setResetEmail(email)
+        setResetCodeSent(true)
+        setNotice('If an account exists for that email, a verification code has been sent. Enter it below with your new password.')
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : 'Could not send the password reset code.')
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
+
+    const token = String(formData.get('code') || '').replace(/\s/g, '')
+    const password = String(formData.get('password') || '')
+    const confirmedPassword = String(formData.get('confirm_password') || '')
+    if (password !== confirmedPassword) {
+      setError('The new passwords do not match.')
+      setBusy(false)
+      return
+    }
+
+    let recoverySessionCreated = false
+    let signedOut = false
+    setPasswordResetInProgress(true)
+    try {
+      const { error: verificationError } = await supabase.auth.verifyOtp({
+        email: resetEmail,
+        token,
+        type: 'recovery',
+      })
+      if (verificationError) throw verificationError
+      recoverySessionCreated = true
+
+      const { error: updateError } = await supabase.auth.updateUser({ password })
+      if (updateError) throw updateError
+
+      const { error: signOutError } = await supabase.auth.signOut()
+      if (signOutError) throw signOutError
+      signedOut = true
+      setMode('sign-in')
+      setResetCodeSent(false)
+      setResetEmail('')
+      setPasswordVisible(false)
+      setNotice('Your password has been updated. Sign in with your new password.')
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not reset your password.')
+    } finally {
+      if (recoverySessionCreated && !signedOut) {
+        const { error: signOutError } = await supabase.auth.signOut()
+        if (signOutError) {
+          setError((currentError) => currentError
+            ? `${currentError} The recovery session could not be closed; reload the page before trying again.`
+            : 'Your recovery session could not be closed. Reload the page before trying again.')
+        }
+      }
+      setPasswordResetInProgress(false)
+      setBusy(false)
+    }
+  }
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -126,42 +215,88 @@ function AuthScreen({ message }) {
     <main className="auth-page">
       <section className="auth-card">
         <div className="auth-brand"><span className="brand-mark"><span /></span><span>reap</span></div>
-        <p className="eyebrow">{mode === 'sign-in' ? 'Welcome back' : 'Get started'}</p>
-        <h1>{mode === 'sign-in' ? 'Sign in to Reap' : 'Create your account'}</h1>
+        <p className="eyebrow">{mode === 'sign-in' ? 'Welcome back' : mode === 'sign-up' ? 'Get started' : 'Account recovery'}</p>
+        <h1>{mode === 'sign-in' ? 'Sign in to Reap' : mode === 'sign-up' ? 'Create your account' : resetCodeSent ? 'Choose a new password' : 'Reset your password'}</h1>
         {message && <p className="auth-error" role="alert">{message}</p>}
         {error && <p className="auth-error" role="alert">{error}</p>}
         {notice && <p className="auth-notice" role="status">{notice}</p>}
-        <form onSubmit={handleSubmit}>
-          {mode === 'sign-up' && (
-            <label>Name<input name="name" type="text" autoComplete="name" maxLength="80" required /></label>
-          )}
-          {mode === 'sign-up' && (
-            <label>Referral code (required)
-              <input
-                name="referral_code"
-                type="text"
-                autoComplete="off"
-                maxLength="12"
-                value={referralCode}
-                onChange={(event) => setReferralCode(event.target.value.toUpperCase())}
-                required
-              />
-            </label>
-          )}
-          <label>Email<input name="email" type="email" autoComplete="email" required /></label>
-          <label htmlFor="auth-password">Password</label>
-          <div className="password-field">
-            <input id="auth-password" name="password" type={passwordVisible ? 'text' : 'password'} autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'} minLength="8" required />
-            <button type="button" className="password-visibility" onClick={() => setPasswordVisible(!passwordVisible)} aria-label={passwordVisible ? 'Hide password' : 'Show password'} aria-pressed={passwordVisible}>
-              <Icon name={passwordVisible ? 'eyeOff' : 'eye'} />
+        {mode === 'reset' ? (
+          <form onSubmit={handlePasswordReset}>
+            {!resetCodeSent ? (
+              <>
+                <p className="auth-description">Enter the email address linked to your account. We will send you a verification code.</p>
+                <label>Email<input name="email" type="email" autoComplete="email" required /></label>
+                <button className="primary-button wide" type="submit" disabled={busy}>
+                  {busy ? 'Sending code…' : 'Send verification code'}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="auth-description">Enter the code sent to <strong>{resetEmail}</strong> and your new password.</p>
+                <label>Verification code
+                  <input name="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" placeholder="6-digit code" required autoFocus />
+                </label>
+                <label htmlFor="reset-password">New password</label>
+                <div className="password-field">
+                  <input id="reset-password" name="password" type={passwordVisible ? 'text' : 'password'} autoComplete="new-password" minLength="8" required />
+                  <button type="button" className="password-visibility" onClick={() => setPasswordVisible(!passwordVisible)} aria-label={passwordVisible ? 'Hide password' : 'Show password'} aria-pressed={passwordVisible}>
+                    <Icon name={passwordVisible ? 'eyeOff' : 'eye'} />
+                  </button>
+                </div>
+                <label>Confirm new password
+                  <input name="confirm_password" type={passwordVisible ? 'text' : 'password'} autoComplete="new-password" minLength="8" required />
+                </label>
+                <button className="primary-button wide" type="submit" disabled={busy}>
+                  {busy ? 'Updating password…' : 'Update password'}
+                </button>
+                <button className="auth-link auth-resend" type="button" disabled={busy} onClick={() => {
+                  setResetCodeSent(false)
+                  setError('')
+                  setNotice('')
+                }}>
+                  Use a different email or resend the code
+                </button>
+              </>
+            )}
+          </form>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            {mode === 'sign-up' && (
+              <label>Name<input name="name" type="text" autoComplete="name" maxLength="80" required /></label>
+            )}
+            {mode === 'sign-up' && (
+              <label>Referral code (required)
+                <input
+                  name="referral_code"
+                  type="text"
+                  autoComplete="off"
+                  maxLength="12"
+                  value={referralCode}
+                  onChange={(event) => setReferralCode(event.target.value.toUpperCase())}
+                  required
+                />
+              </label>
+            )}
+            <label>Email<input name="email" type="email" autoComplete="email" required /></label>
+            <label htmlFor="auth-password">Password</label>
+            <div className="password-field">
+              <input id="auth-password" name="password" type={passwordVisible ? 'text' : 'password'} autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'} minLength="8" required />
+              <button type="button" className="password-visibility" onClick={() => setPasswordVisible(!passwordVisible)} aria-label={passwordVisible ? 'Hide password' : 'Show password'} aria-pressed={passwordVisible}>
+                <Icon name={passwordVisible ? 'eyeOff' : 'eye'} />
+              </button>
+            </div>
+            {mode === 'sign-in' && (
+              <button className="auth-link auth-forgot" type="button" onClick={() => openMode('reset')}>
+                Forgot password?
+              </button>
+            )}
+            <button className="primary-button wide" type="submit" disabled={busy}>
+              {busy ? 'Please wait…' : mode === 'sign-in' ? 'Sign in' : 'Create account'}
             </button>
-          </div>
-          <button className="primary-button wide" type="submit" disabled={busy}>
-            {busy ? 'Please wait…' : mode === 'sign-in' ? 'Sign in' : 'Create account'}
-          </button>
-        </form>
-        <button className="auth-switch" onClick={() => { setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in'); setPasswordVisible(false); setError(''); setNotice('') }}>
-          {mode === 'sign-in' ? 'New to Reap? Create an account' : 'Already registered? Sign in'}
+          </form>
+        )}
+        <button className="auth-switch" onClick={() => openMode(mode === 'sign-in' ? 'sign-up' : 'sign-in')}>
+          {mode === 'sign-up' ? 'Already registered? Sign in' : mode === 'reset' ? 'Back to sign in' : 'New to Reap? Create an account'}
         </button>
       </section>
     </main>
@@ -424,6 +559,10 @@ function App() {
 
     function acceptSession(nextSession, eventName = 'INITIAL_SESSION') {
       if (!active) return
+      if (nextSession && isPasswordResetInProgress()) {
+        setAuthLoading(false)
+        return
+      }
 
       try {
         if (!nextSession) {

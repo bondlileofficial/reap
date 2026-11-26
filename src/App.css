@@ -1152,6 +1152,34 @@
   font-weight: 750;
 }
 
+.auth-link {
+  border: 0;
+  background: transparent;
+  color: var(--forest);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-forgot {
+  display: block;
+  margin: -3px 0 12px auto;
+  padding: 0;
+}
+
+.auth-resend {
+  display: block;
+  margin: 14px auto 0;
+}
+
+.auth-description strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
 .auth-error,
 .auth-notice {
   margin: 0 0 14px;
