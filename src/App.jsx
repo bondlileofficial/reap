@@ -377,6 +377,10 @@ function App() {
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileError, setProfileError] = useState('')
   const [profileNotice, setProfileNotice] = useState('')
+  const [passwordChangeBusy, setPasswordChangeBusy] = useState(false)
+  const [passwordChangeError, setPasswordChangeError] = useState('')
+  const [passwordChangeNotice, setPasswordChangeNotice] = useState('')
+  const [settingsPasswordVisible, setSettingsPasswordVisible] = useState(false)
   const [transactionReviewerId, setTransactionReviewerId] = useState(null)
   const [reviewRoleCheckedUserId, setReviewRoleCheckedUserId] = useState(null)
   const [reviewQueue, setReviewQueue] = useState([])
@@ -529,6 +533,46 @@ function App() {
       setProfileError(requestError instanceof Error ? requestError.message : 'Could not save your account details.')
     } finally {
       setProfileBusy(false)
+    }
+  }
+
+  async function changePassword(event) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const formData = new FormData(form)
+    const currentPassword = String(formData.get('current_password') || '')
+    const newPassword = String(formData.get('new_password') || '')
+    const confirmedPassword = String(formData.get('confirm_password') || '')
+
+    setPasswordChangeError('')
+    setPasswordChangeNotice('')
+    if (newPassword !== confirmedPassword) {
+      setPasswordChangeError('The new passwords do not match.')
+      return
+    }
+    if (!session?.user.email) {
+      setPasswordChangeError('Sign in again before changing your password.')
+      return
+    }
+
+    setPasswordChangeBusy(true)
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: session.user.email,
+        password: currentPassword,
+      })
+      if (signInError) throw new Error('Your current password is incorrect.')
+
+      const { error: updateError } = await supabase.auth.updateUser({ password: newPassword })
+      if (updateError) throw updateError
+
+      form.reset()
+      setSettingsPasswordVisible(false)
+      setPasswordChangeNotice('Your password has been changed successfully.')
+    } catch (requestError) {
+      setPasswordChangeError(requestError instanceof Error ? requestError.message : 'Could not change your password.')
+    } finally {
+      setPasswordChangeBusy(false)
     }
   }
 
@@ -1807,6 +1851,35 @@ function App() {
                         {profileBusy ? 'Saving…' : 'Save changes'}
                       </button>
                     </form>
+                    <div className="settings-section">
+                      <div className="settings-heading">
+                        <p className="eyebrow">Security</p>
+                        <h2>Change password</h2>
+                        <p>Enter your current password before choosing a new one.</p>
+                      </div>
+                      <form className="settings-form" onSubmit={changePassword}>
+                        <label>
+                          Current password
+                          <input name="current_password" type={settingsPasswordVisible ? 'text' : 'password'} autoComplete="current-password" minLength="8" required />
+                        </label>
+                        <label>
+                          New password
+                          <input name="new_password" type={settingsPasswordVisible ? 'text' : 'password'} autoComplete="new-password" minLength="8" required />
+                        </label>
+                        <label>
+                          Confirm new password
+                          <input name="confirm_password" type={settingsPasswordVisible ? 'text' : 'password'} autoComplete="new-password" minLength="8" required />
+                        </label>
+                        <button className="settings-password-toggle auth-link" type="button" onClick={() => setSettingsPasswordVisible((visible) => !visible)} aria-pressed={settingsPasswordVisible}>
+                          {settingsPasswordVisible ? 'Hide passwords' : 'Show passwords'}
+                        </button>
+                        {passwordChangeError && <p className="auth-error" role="alert">{passwordChangeError}</p>}
+                        {passwordChangeNotice && <p className="auth-notice" role="status">{passwordChangeNotice}</p>}
+                        <button className="primary-button" type="submit" disabled={passwordChangeBusy}>
+                          {passwordChangeBusy ? 'Updating…' : 'Change password'}
+                        </button>
+                      </form>
+                    </div>
                     <div className="settings-signout">
                       <div>
                         <h3>Sign out</h3>
