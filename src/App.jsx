@@ -377,6 +377,7 @@ function App() {
   const [profile, setProfile] = useState(null)
   const [profileName, setProfileName] = useState('')
   const [profilePhone, setProfilePhone] = useState('')
+  const [shareReferralContact, setShareReferralContact] = useState(false)
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileError, setProfileError] = useState('')
   const [profileNotice, setProfileNotice] = useState('')
@@ -400,10 +401,13 @@ function App() {
   const [appError, setAppError] = useState('')
   const [referralCode, setReferralCode] = useState('')
   const [referralSummary, setReferralSummary] = useState(null)
+  const [referralContacts, setReferralContacts] = useState([])
   const [referralError, setReferralError] = useState('')
   const [referralUserId, setReferralUserId] = useState(null)
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
+  const visibleReferralSummary = !referralLoading && !referralError ? referralSummary : null
+  const visibleReferralContacts = !referralLoading && !referralError ? referralContacts : []
   const siteTime = getKampalaTimeParts(scheduleNow)
   const isTaskWeekday = tasksAllowed(scheduleNow, session?.user.created_at)
   const promotionSeconds = promotionRemaining(scheduleNow)
@@ -524,15 +528,16 @@ function App() {
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .update({ display_name: displayName, phone_number: phoneNumber || null })
+        .update({ display_name: displayName, phone_number: phoneNumber || null, share_referral_contact: shareReferralContact })
         .eq('id', session.user.id)
-        .select('id, display_name, phone_number, referral_code')
+        .select('id, display_name, phone_number, referral_code, share_referral_contact')
         .single()
 
       if (error) throw error
       setProfile(data)
       setProfileName(data.display_name || '')
       setProfilePhone(data.phone_number || '')
+      setShareReferralContact(data.share_referral_contact)
       setProfileNotice('Your account details have been saved.')
     } catch (requestError) {
       setProfileError(requestError instanceof Error ? requestError.message : 'Could not save your account details.')
@@ -744,17 +749,20 @@ function App() {
 
     async function loadReferralData() {
       try {
-        const [profileResult, summaryResult] = await Promise.all([
+        const [profileResult, summaryResult, contactsResult] = await Promise.all([
           supabase.from('profiles').select('referral_code').eq('id', session.user.id).single(),
           supabase.rpc('get_my_referral_summary'),
+          supabase.rpc('get_my_referral_contacts'),
         ])
 
         if (profileResult.error) throw profileResult.error
         if (summaryResult.error) throw summaryResult.error
+        if (contactsResult.error) throw contactsResult.error
 
         if (activeRequest) {
           setReferralCode(profileResult.data.referral_code)
           setReferralSummary(Array.isArray(summaryResult.data) ? summaryResult.data[0] : summaryResult.data)
+          setReferralContacts(contactsResult.data ?? [])
           setReferralError('')
         }
       } catch (requestError) {
@@ -827,7 +835,7 @@ function App() {
 
       try {
         const [profileResult, ledgerResult, packagesResult, taskProgressResult, withdrawalRequestsResult, walletBalanceResult, depositRequestsResult] = await Promise.all([
-          supabase.from('profiles').select('id, display_name, phone_number, referral_code').eq('id', session.user.id).single(),
+          supabase.from('profiles').select('id, display_name, phone_number, referral_code, share_referral_contact').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, reference, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
           supabase.rpc('get_my_task_progress'),
@@ -858,6 +866,7 @@ function App() {
             setProfile(profileResult.data)
             setProfileName(profileResult.data.display_name || '')
             setProfilePhone(profileResult.data.phone_number || '')
+            setShareReferralContact(profileResult.data.share_referral_contact)
           }
         if (!ledgerResult.error) setLedgerEntries(ledgerResult.data ?? [])
         if (!walletBalanceResult.error && walletBalanceResult.data !== null) {
@@ -1805,7 +1814,7 @@ function App() {
                 <section className="referral-intro">
                   <p className="eyebrow">Grow your community</p>
                   <h2>Share Reap with your network</h2>
-                  <p>Earn 10% when someone you directly invite makes their first approved deposit.</p>
+                  <p>Earn 10%, 5%, or 3% when a level 1, 2, or 3 referral makes their first approved deposit.</p>
                   <div className="referral-share">
                     <div>
                       <span>Your referral link</span>
@@ -1822,16 +1831,36 @@ function App() {
                 {referralError && <p className="auth-error" role="alert">{referralError}</p>}
                 <span className="sr-only" role="status">{referralCopied ? 'Referral link copied.' : ''}</span>
                 <div className="referral-levels">
-                  <article className="referral-level-card">
-                    <div><span>Direct referrals</span><strong>10%</strong></div>
-                    <p>of each referred user's first approved deposit</p>
-                    <div className="referral-metrics">
-                      <span><b>{referralSummary?.level_1_count ?? '—'}</b> referrals</span>
-                      <span><b>${(Number(referralSummary?.level_1_earnings ?? 0) + Number(referralSummary?.level_2_earnings ?? 0) + Number(referralSummary?.level_3_earnings ?? 0)).toFixed(2)}</b> earned</span>
-                    </div>
-                  </article>
+                  {[1, 2, 3].map((level) => (
+                    <article className="referral-level-card" key={level}>
+                      <div><span>Level {level}{level === 1 ? ' · Direct' : ''}</span><strong>{[10, 5, 3][level - 1]}%</strong></div>
+                      <p>of each referred user's first approved deposit</p>
+                      <div className="referral-metrics">
+                        <span><b>{visibleReferralSummary?.[`level_${level}_count`] ?? '—'}</b> referrals</span>
+                        <span><b>{visibleReferralSummary ? `$${Number(visibleReferralSummary[`level_${level}_earnings`] ?? 0).toFixed(2)}` : '—'}</b> earned</span>
+                      </div>
+                    </article>
+                  ))}
                 </div>
-                <p className="referral-disclaimer">Rewards are credited once per referred user after their first deposit is approved. Earnings include any historical referral commissions.</p>
+                <p className="referral-disclaimer">Rewards are credited once per referred user after their first deposit is approved. Levels 2 and 3 apply to first deposits approved after this update; earnings include historical referral commissions.</p>
+                <section className="referral-contacts">
+                  <h2>Downline contacts</h2>
+                  <p>Only downliners who choose to share their details appear here. They can stop sharing at any time.</p>
+                  <div className="review-table-wrap">
+                    <table className="review-table">
+                      <thead><tr><th>Level</th><th>Name</th><th>Email</th><th>Phone</th></tr></thead>
+                      <tbody>
+                        {visibleReferralContacts.map((contact, index) => (
+                          <tr key={`${contact.level}-${contact.email}-${index}`}>
+                            <td>{contact.level}</td><td>{contact.display_name || 'Not provided'}</td>
+                            <td>{contact.email || 'Not provided'}</td><td>{contact.phone_number || 'Not provided'}</td>
+                          </tr>
+                        ))}
+                        {visibleReferralContacts.length === 0 && <tr><td className="review-empty" colSpan="4">{referralLoading ? 'Loading contacts…' : referralError ? 'Contacts could not be loaded.' : 'No downliners have shared their details.'}</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
               </div>
             ) : active === 'Settings' ? (
               <section className="settings-card">
@@ -1869,6 +1898,10 @@ function App() {
                       <label>
                         Email
                         <input type="email" value={session.user.email || ''} readOnly />
+                      </label>
+                      <label className="referral-sharing">
+                        <input type="checkbox" checked={shareReferralContact} onChange={(event) => setShareReferralContact(event.target.checked)} />
+                        <span>Share my name, email and phone number with my referral uplines (up to three levels). I can turn this off and save at any time.</span>
                       </label>
                       {profileError && <p className="auth-error" role="alert">{profileError}</p>}
                       {profileNotice && <p className="auth-notice" role="status">{profileNotice}</p>}

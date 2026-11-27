@@ -918,6 +918,31 @@
   background: var(--paper);
 }
 
+.referral-contacts {
+  margin-top: 24px;
+}
+
+.referral-contacts h2 {
+  margin-bottom: 8px;
+}
+
+.referral-contacts > p {
+  color: var(--muted);
+}
+
+.settings-form .referral-sharing {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.5;
+}
+
+.settings-form .referral-sharing input {
+  width: auto;
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
 .referral-level-card > div:first-child {
   display: flex;
   justify-content: space-between;
