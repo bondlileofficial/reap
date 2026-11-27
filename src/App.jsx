@@ -279,6 +279,9 @@ function AuthScreen({ message }) {
                 />
               </label>
             )}
+            {mode === 'sign-up' && (
+              <p className="auth-description">Your name, email and phone number will be visible to your referral uplines up to three levels.</p>
+            )}
             <label>Email<input name="email" type="email" autoComplete="email" required /></label>
             <label htmlFor="auth-password">Password</label>
             <div className="password-field">
@@ -377,7 +380,6 @@ function App() {
   const [profile, setProfile] = useState(null)
   const [profileName, setProfileName] = useState('')
   const [profilePhone, setProfilePhone] = useState('')
-  const [shareReferralContact, setShareReferralContact] = useState(false)
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileError, setProfileError] = useState('')
   const [profileNotice, setProfileNotice] = useState('')
@@ -528,16 +530,15 @@ function App() {
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .update({ display_name: displayName, phone_number: phoneNumber || null, share_referral_contact: shareReferralContact })
+        .update({ display_name: displayName, phone_number: phoneNumber || null })
         .eq('id', session.user.id)
-        .select('id, display_name, phone_number, referral_code, share_referral_contact')
+        .select('id, display_name, phone_number, referral_code')
         .single()
 
       if (error) throw error
       setProfile(data)
       setProfileName(data.display_name || '')
       setProfilePhone(data.phone_number || '')
-      setShareReferralContact(data.share_referral_contact)
       setProfileNotice('Your account details have been saved.')
     } catch (requestError) {
       setProfileError(requestError instanceof Error ? requestError.message : 'Could not save your account details.')
@@ -835,7 +836,7 @@ function App() {
 
       try {
         const [profileResult, ledgerResult, packagesResult, taskProgressResult, withdrawalRequestsResult, walletBalanceResult, depositRequestsResult] = await Promise.all([
-          supabase.from('profiles').select('id, display_name, phone_number, referral_code, share_referral_contact').eq('id', session.user.id).single(),
+          supabase.from('profiles').select('id, display_name, phone_number, referral_code').eq('id', session.user.id).single(),
           supabase.from('ledger_entries').select('entry_type, amount_usd, status, reference, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
           supabase.rpc('get_my_task_progress'),
@@ -866,7 +867,6 @@ function App() {
             setProfile(profileResult.data)
             setProfileName(profileResult.data.display_name || '')
             setProfilePhone(profileResult.data.phone_number || '')
-            setShareReferralContact(profileResult.data.share_referral_contact)
           }
         if (!ledgerResult.error) setLedgerEntries(ledgerResult.data ?? [])
         if (!walletBalanceResult.error && walletBalanceResult.data !== null) {
@@ -1845,7 +1845,7 @@ function App() {
                 <p className="referral-disclaimer">Rewards are credited once per referred user after their first deposit is approved. Levels 2 and 3 apply to first deposits approved after this update; earnings include historical referral commissions.</p>
                 <section className="referral-contacts">
                   <h2>Downline contacts</h2>
-                  <p>Only downliners who choose to share their details appear here. They can stop sharing at any time.</p>
+                  <p>Downline names, emails and phone numbers are visible to their referral uplines up to three levels.</p>
                   <div className="review-table-wrap">
                     <table className="review-table">
                       <thead><tr><th>Level</th><th>Name</th><th>Email</th><th>Phone</th></tr></thead>
@@ -1856,7 +1856,7 @@ function App() {
                             <td>{contact.email || 'Not provided'}</td><td>{contact.phone_number || 'Not provided'}</td>
                           </tr>
                         ))}
-                        {visibleReferralContacts.length === 0 && <tr><td className="review-empty" colSpan="4">{referralLoading ? 'Loading contacts…' : referralError ? 'Contacts could not be loaded.' : 'No downliners have shared their details.'}</td></tr>}
+                        {visibleReferralContacts.length === 0 && <tr><td className="review-empty" colSpan="4">{referralLoading ? 'Loading contacts…' : referralError ? 'Contacts could not be loaded.' : 'You do not have any downliners yet.'}</td></tr>}
                       </tbody>
                     </table>
                   </div>
@@ -1899,10 +1899,7 @@ function App() {
                         Email
                         <input type="email" value={session.user.email || ''} readOnly />
                       </label>
-                      <label className="referral-sharing">
-                        <input type="checkbox" checked={shareReferralContact} onChange={(event) => setShareReferralContact(event.target.checked)} />
-                        <span>Share my name, email and phone number with my referral uplines (up to three levels). I can turn this off and save at any time.</span>
-                      </label>
+                      <p className="preview-modal-note">Your name, email and phone number are visible to your referral uplines up to three levels.</p>
                       {profileError && <p className="auth-error" role="alert">{profileError}</p>}
                       {profileNotice && <p className="auth-notice" role="status">{profileNotice}</p>}
                       <button className="primary-button" type="submit" disabled={profileBusy}>

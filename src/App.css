@@ -930,19 +930,6 @@
   color: var(--muted);
 }
 
-.settings-form .referral-sharing {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  line-height: 1.5;
-}
-
-.settings-form .referral-sharing input {
-  width: auto;
-  flex: 0 0 auto;
-  margin-top: 3px;
-}
-
 .referral-level-card > div:first-child {
   display: flex;
   justify-content: space-between;

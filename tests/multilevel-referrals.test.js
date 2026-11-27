@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { PGlite } from '@electric-sql/pglite'
 
-test('first-deposit commissions and opted-in contacts are restricted to the correct downline', async () => {
+test('first-deposit commissions and downline contacts are restricted to the correct network', async () => {
   const db = new PGlite()
   const ids = Array.from({ length: 6 }, (_, index) => `00000000-0000-0000-0000-00000000000${index + 1}`)
   const deposit = (number) => `10000000-0000-0000-0000-00000000000${number}`
@@ -75,6 +75,17 @@ test('first-deposit commissions and opted-in contacts are restricted to the corr
     ])
     await db.query(`update public.profiles set share_referral_contact = false where id = $1`, [ids[2]])
     assert.equal((await db.query(`select * from public.get_my_referral_contacts()`)).rows.length, 1)
+    await db.exec(await readFile(new URL('../supabase/migrations/202611270003_downline_contacts.sql', import.meta.url), 'utf8'))
+    const allContacts = await db.query(`select * from public.get_my_referral_contacts()`)
+    assert.deepEqual(allContacts.rows, [
+      { level: 1, display_name: 'User 1', email: 'user1@example.test', phone_number: 'phone1' },
+      { level: 2, display_name: 'User 2', email: 'user2@example.test', phone_number: 'phone2' },
+      { level: 3, display_name: 'User 3', email: 'user3@example.test', phone_number: 'phone3' },
+    ])
+    await db.query(`update public.profiles set phone_number = null where id = $1`, [ids[1]])
+    assert.equal((await db.query(`select phone_number from public.get_my_referral_contacts() where level = 1`)).rows[0].phone_number, null)
+    await db.query(`update public.profiles set referred_by = $1 where id = $2`, [ids[3], ids[4]])
+    assert.equal((await db.query(`select * from public.get_my_referral_contacts()`)).rows.length, 3)
     await db.query(`select set_config('test.uid', $1, false)`, [ids[5]])
     assert.equal((await db.query(`select * from public.get_my_referral_contacts()`)).rows.length, 0)
     const privileges = await db.query(`select has_function_privilege('anon', 'public.get_my_referral_contacts()', 'execute') as anon_allowed, has_function_privilege('authenticated', 'public.get_my_referral_contacts()', 'execute') as user_allowed`)
