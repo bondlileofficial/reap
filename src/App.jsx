@@ -6,6 +6,7 @@ import {
   supabase,
 } from './lib/supabase'
 import { getReferralCodeFromUrl, getReferralUrl } from './lib/referral'
+import { promotionRemaining, tasksAllowed } from './lib/promotion'
 import './App.css'
 
 const tronDepositAddress = 'TL2Lv1QKRgswFNLJ9km6HzHMr8WaSsH3ij'
@@ -59,6 +60,7 @@ const plans = [
   { amount: 120, daily: 18, tasks: 10, accent: '#b6dcd8' },
   { amount: 200, daily: 30, tasks: 12, accent: '#c8caff' },
   { amount: 250, daily: 38, tasks: 15, accent: '#b9dfbd' },
+  { amount: 500, daily: 20, tasks: 10, accent: '#cbd9ff' },
 ]
 
 function AuthScreen({ message }) {
@@ -327,6 +329,7 @@ function App() {
   const [active, setActive] = useState('Overview')
   const [today, setToday] = useState(getUtcDateKey)
   const [scheduleNow, setScheduleNow] = useState(() => new Date())
+  const [promotionDismissed, setPromotionDismissed] = useState(false)
   const [modal, setModal] = useState(null)
   const [watchTask, setWatchTask] = useState(null)
   const [watchedSeconds, setWatchedSeconds] = useState(0)
@@ -402,7 +405,9 @@ function App() {
   const [referralCopied, setReferralCopied] = useState(false)
   const referralLoading = Boolean(session?.user.id && referralUserId !== session.user.id)
   const siteTime = getKampalaTimeParts(scheduleNow)
-  const isTaskWeekday = !['Sat', 'Sun'].includes(siteTime.weekday)
+  const isTaskWeekday = tasksAllowed(scheduleNow, session?.user.created_at)
+  const promotionSeconds = promotionRemaining(scheduleNow)
+  const promotionCountdown = `${String(Math.floor(promotionSeconds / 3600)).padStart(2, '0')}:${String(Math.floor(promotionSeconds % 3600 / 60)).padStart(2, '0')}:${String(promotionSeconds % 60).padStart(2, '0')}`
   const isWithdrawalWindowOpen = siteTime.hour >= 9 && siteTime.hour < 16
   const userId = session?.user.id
   const canReviewTransactions = Boolean(userId && reviewRoleCheckedUserId === userId && transactionReviewerId === userId)
@@ -449,7 +454,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const timer = window.setInterval(() => setScheduleNow(new Date()), 30_000)
+    const timer = window.setInterval(() => setScheduleNow(new Date()), 1000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -823,7 +828,7 @@ function App() {
       try {
         const [profileResult, ledgerResult, packagesResult, taskProgressResult, withdrawalRequestsResult, walletBalanceResult, depositRequestsResult] = await Promise.all([
           supabase.from('profiles').select('id, display_name, phone_number, referral_code').eq('id', session.user.id).single(),
-          supabase.from('ledger_entries').select('entry_type, amount_usd, status, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
+          supabase.from('ledger_entries').select('entry_type, amount_usd, status, reference, created_at').eq('user_id', session.user.id).eq('status', 'confirmed').order('created_at', { ascending: false }),
           supabase.from('user_packages').select('id, status, starts_at, ends_at, plans(amount_usd, daily_task_limit, daily_reward_usd, active)').eq('user_id', session.user.id).order('created_at', { ascending: false }),
           supabase.rpc('get_my_task_progress'),
           supabase.from('withdrawal_requests').select('id, amount_usd, status').eq('user_id', session.user.id).in('status', ['pending', 'processing']),
@@ -928,7 +933,7 @@ function App() {
     const [ledgerResult, withdrawalResult, walletBalanceResult, packagesResult, depositRequestsResult] = await Promise.all([
       supabase
         .from('ledger_entries')
-        .select('entry_type, amount_usd, status, created_at')
+        .select('entry_type, amount_usd, status, reference, created_at')
         .eq('user_id', userId)
         .eq('status', 'confirmed')
         .order('created_at', { ascending: false }),
@@ -1359,6 +1364,15 @@ function App() {
         status: 'Earned',
         createdAt: entry.created_at,
       })),
+    ...ledgerEntries
+      .filter((entry) => entry.entry_type === 'adjustment' && entry.reference?.startsWith('deposit-promotion:'))
+      .map((entry) => ({
+        id: entry.reference,
+        type: 'Deposit bonus',
+        amount: Number(entry.amount_usd),
+        status: 'Earned',
+        createdAt: entry.created_at,
+      })),
   ].sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
   const approvedToday = taskCompletions.filter((completion) => completion.status === 'approved').length
   const earningPackages = packages.filter((item) => (
@@ -1584,6 +1598,16 @@ function App() {
 
         {active === 'Overview' && (
           <>
+            {promotionSeconds > 0 && !promotionDismissed && (
+              <section className="promotion-card" aria-label="Limited-time deposit bonus">
+                <button className="promotion-close" type="button" aria-label="Close deposit bonus advertisement" onClick={() => setPromotionDismissed(true)}>×</button>
+                <p className="promotion-label">24-hour offer</p>
+                <h2>Deposit $50 or more and get a 50% bonus</h2>
+                <p>Submit your deposit before the countdown ends. Your bonus is credited when the deposit is approved.</p>
+                <p className="promotion-timer">Offer ends in <strong>{promotionCountdown}</strong> · Zimbabwe time</p>
+                <button className="primary-button" type="button" onClick={() => openModal('deposit')}>Deposit now</button>
+              </section>
+            )}
             <section className="balance-card">
               <div className="balance-main">
                 <p>Total balance</p>
@@ -1628,7 +1652,7 @@ function App() {
               <p className="task-cooldown" role="status">All tasks complete. New tasks unlock in <strong>{taskCooldownLabel}</strong>.</p>
             )}
             {!isTaskWeekday && (
-              <p className="task-cooldown" role="status">Video tasks are available Monday through Friday (Africa/Kampala time).</p>
+              <p className="task-cooldown" role="status">Tasks are available Monday through Friday. Users who join Friday through Sunday can also play on their first weekend (Zimbabwe time).</p>
             )}
 
             <section className="section-heading package-heading">
@@ -1645,6 +1669,7 @@ function App() {
                   <div className="package-details">
                     <span><b>{plan.tasks}</b> tasks daily</span>
                     <span>Earn <b>${plan.daily}</b> daily</span>
+                    {[5, 10].includes(plan.amount) && <span>One purchase per account</span>}
                   </div>
                   <button onClick={() => { setSelectedPlan(plan); openModal('choose') }}>Choose package</button>
                 </article>
@@ -1669,7 +1694,7 @@ function App() {
                   </div>
                 </div>
                 {!isTaskWeekday && (
-                  <p className="task-cooldown" role="status">Video tasks are available Monday through Friday (Africa/Kampala time).</p>
+                  <p className="task-cooldown" role="status">Tasks are available Monday through Friday. Users who join Friday through Sunday can also play on their first weekend (Zimbabwe time).</p>
                 )}
                 {taskCooldownSeconds > 0 && (
                   <p className="task-cooldown" role="status">You completed all tasks. They renew in <strong>{taskCooldownLabel}</strong>.</p>
@@ -1728,7 +1753,7 @@ function App() {
                   <article className="package-card" style={{ '--plan-accent': plan.accent }} key={plan.amount}>
                     {plan.popular && <span className="popular">Popular</span>}
                     <p>Package</p><h3>${plan.amount}</h3>
-                    <div className="package-details"><span><b>{plan.tasks}</b> tasks daily</span><span>Earn <b>${plan.daily}</b> daily</span></div>
+                    <div className="package-details"><span><b>{plan.tasks}</b> tasks daily</span><span>Earn <b>${plan.daily}</b> daily</span>{[5, 10].includes(plan.amount) && <span>One purchase per account</span>}</div>
                     <button onClick={() => { setSelectedPlan(plan); openModal('choose') }}>Choose package</button>
                   </article>
                 ))}
@@ -2029,6 +2054,10 @@ function App() {
                 <p className="eyebrow">Selected package</p>
                 <h2 id="modal-title">${selectedPlan.amount} package</h2>
                 <div className="modal-summary"><span>{selectedPlan.tasks} daily tasks</span><span>${selectedPlan.daily} daily earnings</span><span>365 day term</span></div>
+                {[5, 10].includes(selectedPlan.amount) && <p className="preview-modal-note">This package can only be purchased once per account, including previous purchases.</p>}
+                {[5, 10].includes(selectedPlan.amount) && packages.some((item) => Number(item.plans?.amount_usd) === selectedPlan.amount) && (
+                  <p className="auth-error" role="alert">You have already purchased this package.</p>
+                )}
                 {packageBalanceLoading ? (
                   <p className="preview-modal-note">Checking your latest wallet balance…</p>
                 ) : isSupabaseConfigured && databaseAvailableBalance === null ? (
@@ -2042,7 +2071,7 @@ function App() {
                 <button
                   className="primary-button wide"
                   onClick={purchaseSelectedPackage}
-                  disabled={!isSupabaseConfigured || packageBalanceLoading || packagePurchaseBusy || databaseAvailableBalance === null || !selectedPlan.id || availableBalance < selectedPlan.amount}
+                  disabled={!isSupabaseConfigured || packageBalanceLoading || packagePurchaseBusy || databaseAvailableBalance === null || !selectedPlan.id || availableBalance < selectedPlan.amount || ([5, 10].includes(selectedPlan.amount) && packages.some((item) => Number(item.plans?.amount_usd) === selectedPlan.amount))}
                 >
                   {packagePurchaseBusy ? 'Purchasing…' : `Buy package for $${selectedPlan.amount}`}
                 </button>
